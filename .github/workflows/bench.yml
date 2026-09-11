@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 H. De Pauw
+
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'      # weekly, Sunday 03:00 UTC
+  workflow_dispatch:          # allow manual trigger
+
+permissions:
+  contents: write             # needed to commit results back
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture runner info
+        run: |
+          mkdir -p benchmarks/results
+          DATE=$(date -u +%Y-%m-%d)
+          OUT=benchmarks/results/${DATE}.txt
+          echo "=== runner info ===" > "$OUT"
+          grep -m1 'model name' /proc/cpuinfo >> "$OUT" || true
+          nproc >> "$OUT" || true
+          grep MemTotal /proc/meminfo >> "$OUT" || true
+          gcc --version | head -1 >> "$OUT"
+          echo >> "$OUT"
+
+      - name: Build benchmarks
+        run: |
+          cmake -B build-bench -DRB_BUILD_BENCH=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-bench -j
+
+      - name: Run benchmarks
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          OUT=benchmarks/results/${DATE}.txt
+          echo "=== bench_rb ===" >> "$OUT"
+          ./build-bench/bench/bench_rb >> "$OUT"
+          echo >> "$OUT"
+          echo "=== bench_rb_random ===" >> "$OUT"
+          ./build-bench/bench/bench_rb_random >> "$OUT"
+          cat "$OUT"
+
+      - name: Commit results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/results/
+          if git diff --staged --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "benchmarks: $(date -u +%Y-%m-%d)"
+            git push
+          fi

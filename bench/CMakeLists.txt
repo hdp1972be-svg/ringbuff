@@ -1,0 +1,11 @@
+add_executable(bench_rb bench_rb.c)
+target_link_libraries(bench_rb PRIVATE rb)
+if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(bench_rb PRIVATE -O2 -Wall -Wextra)
+endif()
+
+add_executable(bench_rb_random bench_rb_random.c)
+target_link_libraries(bench_rb_random PRIVATE rb)
+if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(bench_rb_random PRIVATE -O2 -Wall -Wextra)
+endif()
