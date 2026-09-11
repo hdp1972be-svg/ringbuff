@@ -49,6 +49,8 @@ target_compile_definitions(rb PUBLIC
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rb PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(rb PRIVATE  -ffunction-sections -fdata-sections)
+
 endif()
 
 if (RB_ENABLE_THREAD_HELPERS)
