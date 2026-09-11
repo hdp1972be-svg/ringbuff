@@ -4,6 +4,8 @@ A tiny C11 library for a single-producer / single-consumer FIFO of references in
 
 ## What it is
 
+![rb architecture](docs/rb-architecture.svg)
+
 A bounded queue that holds indices (or pointers) into a preallocated scratchpad of fixed-size slots. The producer writes directly into a slot, publishes its index, and moves on. The consumer reads directly from the same slot and releases it. No payload is ever copied through the queue. text
 
 ```
@@ -49,6 +51,37 @@ Being honest about what this is not:
 - Not a scheduler. The library never spawns a thread and never owns an event loop. rb_thread.* and rb_notify.* are optional helpers; they exist so you don't have to write them, not because the library wants to be a runtime.
 - No dynamic resize. Capacity cannot change after init. limit (the logical max) can change while the ring is empty; nothing else.
 - Cache-sensitive. Once capacity * stride exceeds L2, throughput drops ~40%. On a laptop that's roughly an 8 MB working set. Budget accordingly if you raise capacity with large slots.
+
+## Call sequence 
+
+## Call sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Producer
+    participant R as Ring
+    participant S as Scratchpad
+    participant C as Consumer
+
+    Note over P,C: Producer publishes a frame
+    P->>R: rb_acquire(&idx, &w, &cap)
+    R-->>P: idx, writable ptr
+    P->>S: write payload into slot[idx]
+    P->>R: rb_publish(idx, len)
+    Note right of R: head released · entry visible
+
+    Note over P,C: Consumer drains at its own pace
+    C->>R: rb_consume(&idx, &obj, &len, &trunc)
+    R-->>C: idx, read-only view
+    C->>S: read payload from slot[idx]
+    C->>R: rb_release(idx)
+    Note right of R: tail released · slot free again
+
+    Note over P,R: Backpressure (edge-triggered)
+    R-->>P: on_full (once when count == limit)
+    R-->>P: on_low_d (once when count drops below d%)
+```
 
 ## No benchmarks against competitors. 
 
