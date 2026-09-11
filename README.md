@@ -52,9 +52,11 @@ Being honest about what this is not:
 - No dynamic resize. Capacity cannot change after init. limit (the logical max) can change while the ring is empty; nothing else.
 - Cache-sensitive. Once capacity * stride exceeds L2, throughput drops ~40%. On a laptop that's roughly an 8 MB working set. Budget accordingly if you raise capacity with large slots.
 
-## Call sequence 
+## No benchmarks against competitors. 
 
-## Call sequence
+It is not the goal of this project to be the fastest SPSC ring in existence. It aims to be fast, predictable, dependency-free, and easy to reason about.
+
+## Call sequence 
 
 ```mermaid
 sequenceDiagram
@@ -83,6 +85,3 @@ sequenceDiagram
     R-->>P: on_low_d (once when count drops below d%)
 ```
 
-## No benchmarks against competitors. 
-
-It is not the goal of this project to be the fastest SPSC ring in existence. It aims to be fast, predictable, dependency-free, and easy to reason about.
