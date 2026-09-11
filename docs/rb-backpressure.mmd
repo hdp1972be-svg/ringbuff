@@ -1,0 +1,17 @@
+```mermaid
+stateDiagram-v2
+    [*] --> Flowing
+    Flowing --> Full: count reaches limit<br/>on_full fires (latched)
+    Full --> Draining: consumer resumes<br/>count < d%
+    Draining --> Flowing: count climbs<br/>slot re-armed
+    Draining --> Critical: count < e%<br/>on_low_e fires
+    Critical --> Draining: producer refills
+    note right of Full
+        Producer callback typically sets
+        stop_reading = true
+    end note
+    note right of Draining
+        on_low_d fired · producer resumes
+        stop_reading = false
+    end note
+```

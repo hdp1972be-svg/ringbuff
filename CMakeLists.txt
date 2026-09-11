@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 # ---------------- Options ----------------
-option(RB_USE_POINTERS          "Use void* entries instead of uint32_t indices" OFF)
+option(RB_USE_POINTERS          "Use void* entries instead of uint32_t indices"  OFF)
 option(RB_SLOT_CACHELINE_PAD    "Pad slot stride up to a cache line"             OFF)
 option(RB_SINGLE_THREADED       "Single-threaded / no atomics mode"              OFF)
 option(RB_USE_ATOMICS           "Use C11 <stdatomic.h>"                          ON)
@@ -15,6 +15,7 @@ option(RB_ENABLE_THREAD_HELPERS "Build pthread spawn/join helper"               
 option(RB_ENABLE_NOTIFY         "Build eventfd/pipe wake-up helpers"             OFF)
 option(RB_BUILD_TESTS           "Build unit tests"                               OFF)
 option(RB_BUILD_BENCH           "Build benchmarks"                               OFF)
+option(RB_SIZE_OPTIMIZED        "Prefer size over speed (-Os)"                   OFF)
 
 # ---------------- Numeric defaults ----------------
 set(RB_SLOT_SIZE  2048 CACHE STRING "Slot size in bytes (incl. header)")
@@ -65,6 +66,10 @@ endif()
 
 if (RB_BUILD_BENCH)
     add_subdirectory(bench)
+endif()
+
+if (RB_SIZE_OPTIMIZED)
+    target_compile_options(rb PRIVATE -Os)
 endif()
 
 # ---------------- Install ----------------

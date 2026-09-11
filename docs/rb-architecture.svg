@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560">
+  <defs>
+    <style>
+      text { font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; }
+      .title    { font-size: 20px; font-weight: 600; fill: #f1f5f9; }
+      .subtitle { font-size: 12px; fill: #94a3b8; }
+      .name     { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; }
+      .code     { font-size: 11px; fill: #cbd5e1; }
+      .note     { font-size: 10px; fill: #94a3b8; }
+      .small    { font-size: 10px; fill: #64748b; }
+      .accent   { font-size: 10px; font-weight: 600; }
+    </style>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa"/>
+    </marker>
+    <marker id="a-orange" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fb923c"/>
+    </marker>
+    <marker id="a-purple" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc"/>
+    </marker>
+    <marker id="a-green" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="560" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="500" y="38" text-anchor="middle" class="title">rb — zero-copy SPSC ring buffer</text>
+  <text x="500" y="58" text-anchor="middle" class="subtitle">
+    only indices travel through the ring · payloads stay in the caller-owned scratchpad
+  </text>
+
+  <!-- ═══════════════ RING ═══════════════ -->
+  <rect x="200" y="90" width="600" height="150" rx="10"
+        fill="#1a0b2e" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="220" y="118" class="name" fill="#d8b4fe">RING</text>
+  <text x="270" y="118" class="code" fill="#c4b5fd">— entries[] only, never payload</text>
+
+  <!-- head / tail cache line separator -->
+  <line x1="220" y1="140" x2="780" y2="140"
+        stroke="#a855f7" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.35"/>
+
+  <!-- entries row -->
+  <rect x="220" y="155" width="76" height="42" rx="5" fill="#3b0764" stroke="#a855f7"/>
+  <text x="258" y="181" text-anchor="middle" class="code">i0</text>
+
+  <rect x="306" y="155" width="76" height="42" rx="5" fill="#3b0764" stroke="#a855f7"/>
+  <text x="344" y="181" text-anchor="middle" class="code">i1</text>
+
+  <rect x="392" y="155" width="76" height="42" rx="5" fill="#3b0764" stroke="#a855f7"/>
+  <text x="430" y="181" text-anchor="middle" class="code">i2</text>
+
+  <rect x="478" y="155" width="76" height="42" rx="5" fill="#1f0f2f"
+        stroke="#a855f7" stroke-dasharray="3,3" opacity="0.7"/>
+  <text x="516" y="181" text-anchor="middle" class="small">empty</text>
+
+  <text x="580" y="172" class="code" fill="#c4b5fd">← head (producer)</text>
+  <text x="580" y="190" class="code" fill="#c4b5fd">← tail (consumer)</text>
+
+  <text x="220" y="222" class="note">
+    each entry: uint32_t index (or void* with RB_USE_POINTERS=1)  ·  capacity is a power of two
+  </text>
+
+  <!-- ═══════════════ SCRATCHPAD ═══════════════ -->
+  <rect x="200" y="320" width="600" height="180" rx="10"
+        fill="#062e22" stroke="#10b981" stroke-width="1.5"/>
+  <text x="220" y="348" class="name" fill="#6ee7b7">SCRATCHPAD</text>
+  <text x="327" y="348" class="code" fill="#a7f3d0">— payload storage, caller-owned, fixed stride</text>
+
+  <text x="220" y="368" class="note">
+    slots × slot_size bytes, aligned to RB_CACHE_LINE
+  </text>
+
+  <!-- slot 0 -->
+  <rect x="220" y="385" width="160" height="60" rx="5" fill="#064e3b" stroke="#10b981"/>
+  <rect x="228" y="393" width="34" height="44" rx="3" fill="#022c22" stroke="#10b981" stroke-width="0.5"/>
+  <text x="245" y="420" text-anchor="middle" class="accent" fill="#6ee7b7">hdr</text>
+  <rect x="270" y="393" width="102" height="44" rx="3" fill="#065f46" opacity="0.7"/>
+  <text x="321" y="420" text-anchor="middle" class="code">payload</text>
+  <text x="300" y="462" text-anchor="middle" class="small">slot 0</text>
+
+  <!-- slot 1 -->
+  <rect x="390" y="385" width="160" height="60" rx="5" fill="#064e3b" stroke="#10b981"/>
+  <rect x="398" y="393" width="34" height="44" rx="3" fill="#022c22" stroke="#10b981" stroke-width="0.5"/>
+  <text x="415" y="420" text-anchor="middle" class="accent" fill="#6ee7b7">hdr</text>
+  <rect x="440" y="393" width="102" height="44" rx="3" fill="#065f46" opacity="0.7"/>
+  <text x="491" y="420" text-anchor="middle" class="code">payload</text>
+  <text x="470" y="462" text-anchor="middle" class="small">slot 1</text>
+
+  <!-- slot 2 -->
+  <rect x="560" y="385" width="160" height="60" rx="5" fill="#064e3b" stroke="#10b981"/>
+  <rect x="568" y="393" width="34" height="44" rx="3" fill="#022c22" stroke="#10b981" stroke-width="0.5"/>
+  <text x="585" y="420" text-anchor="middle" class="accent" fill="#6ee7b7">hdr</text>
+  <rect x="610" y="393" width="102" height="44" rx="3" fill="#065f46" opacity="0.7"/>
+  <text x="661" y="420" text-anchor="middle" class="code">payload</text>
+  <text x="640" y="462" text-anchor="middle" class="small">slot 2</text>
+
+  <text x="740" y="420" class="code">… slot z-1</text>
+
+  <text x="220" y="488" class="note">
+    header: 4 bytes · bit 31 = TRUNCATED · bits 0–30 = payload length
+  </text>
+
+  <!-- ═══════════════ PRODUCER ═══════════════ -->
+  <rect x="30" y="150" width="130" height="240" rx="10"
+        fill="#0c2444" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="95" y="182" text-anchor="middle" class="name" fill="#93c5fd">PRODUCER</text>
+  <line x1="50" y1="194" x2="140" y2="194" stroke="#3b82f6" stroke-width="0.4" opacity="0.4"/>
+
+  <text x="95" y="226" text-anchor="middle" class="code">rb_acquire()</text>
+  <text x="95" y="256" text-anchor="middle" class="code">write payload</text>
+  <text x="95" y="286" text-anchor="middle" class="code">rb_publish()</text>
+
+  <text x="95" y="340" text-anchor="middle" class="small">one thread</text>
+  <text x="95" y="356" text-anchor="middle" class="small">or ISR</text>
+
+  <!-- ═══════════════ CONSUMER ═══════════════ -->
+  <rect x="840" y="150" width="130" height="240" rx="10"
+        fill="#3d1a08" stroke="#f97316" stroke-width="1.5"/>
+  <text x="905" y="182" text-anchor="middle" class="name" fill="#fdba74">CONSUMER</text>
+  <line x1="860" y1="194" x2="950" y2="194" stroke="#f97316" stroke-width="0.4" opacity="0.4"/>
+
+  <text x="905" y="226" text-anchor="middle" class="code">rb_consume()</text>
+  <text x="905" y="256" text-anchor="middle" class="code">read payload</text>
+  <text x="905" y="286" text-anchor="middle" class="code">rb_release()</text>
+
+  <text x="905" y="340" text-anchor="middle" class="small">one thread</text>
+  <text x="905" y="356" text-anchor="middle" class="small">or main loop</text>
+
+  <!-- ═══════════════ ARROWS ═══════════════ -->
+
+  <!-- 1. producer publishes index into ring -->
+  <path d="M 162 195 Q 180 165 198 165"
+        fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#a-blue)"/>
+  <text x="163" y="152" class="accent" fill="#93c5fd">publish</text>
+  <text x="163" y="165" class="small" fill="#93c5fd">(idx)</text>
+
+  <!-- 2. producer writes directly into a scratchpad slot -->
+  <path d="M 162 310 Q 180 385 198 405"
+        fill="none" stroke="#60a5fa" stroke-width="1.8" marker-end="url(#a-blue)"/>
+  <text x="100" y="395" class="accent" fill="#93c5fd">write</text>
+  <text x="100" y="408" class="small" fill="#93c5fd">payload</text>
+
+  <!-- 3. ring entry points at a scratchpad slot -->
+  <path d="M 500 242 L 500 318"
+        fill="none" stroke="#c084fc" stroke-width="1.8" marker-end="url(#a-purple)"/>
+  <text x="510" y="275" class="accent" fill="#d8b4fe">idx → slot</text>
+  <text x="510" y="290" class="small" fill="#d8b4fe">pointer arithmetic</text>
+
+  <!-- 4. consumer consumes index from ring -->
+  <path d="M 802 165 Q 820 165 838 195"
+        fill="none" stroke="#fb923c" stroke-width="1.8" marker-end="url(#a-orange)"/>
+  <text x="806" y="152" class="accent" fill="#fdba74">consume</text>
+  <text x="806" y="165" class="small" fill="#fdba74">(idx)</text>
+
+  <!-- 5. consumer reads directly from the same slot -->
+  <path d="M 802 405 Q 820 385 838 310"
+        fill="none" stroke="#fb923c" stroke-width="1.8" marker-end="url(#a-orange)"/>
+  <text x="820" y="395" class="accent" fill="#fdba74">read</text>
+  <text x="820" y="408" class="small" fill="#fdba74">payload</text>
+
+  <!-- Footer note -->
+  <text x="500" y="530" text-anchor="middle" class="small">
+    zero-copy: payload bytes are written once and read once, in place. Only 4-byte indices move through the ring.
+  </text>
+</svg>
