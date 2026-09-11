@@ -1,30 +1,3 @@
-API at a glance
-Function	Purpose
-rb_size(capacity)	Byte size of the control block
-rb_init(rb, cfg, scratch, size)	Install a caller-owned scratchpad
-rb_acquire(rb, wanted, &idx, &w, &cap)	Get a writable slot
-rb_publish(rb, idx, len)	Publish a filled slot
-rb_abort(rb)	Abort an in-flight acquire
-rb_consume(rb, &idx, &obj, &len, &trunc)	Get a readable slot
-rb_release(rb, idx)	Return a slot to the producer
-rb_drain(rb, fn, user)	Consume every available slot
-rb_flush(rb, fn, user)	Publish until full or fn says stop
-rb_set_limit / rb_set_low_d / rb_set_low_e	Runtime policy
-rb_set_callbacks	Replace the four informational callbacks
-rb_set_oversize_policy	TRUNCATE (default) or DROP
-rb_stats(rb)	Watermarks and counters (if compiled in)
-
-Callbacks:
-Callback	Fires in	Trigger	Latched
-on_slot_added	producer	every publish	no
-on_full	producer	count reaches limit	yes
-on_low_d	consumer	count crosses below d%	yes
-on_low_e	consumer	count crosses below e%	yes
-
----
-FULL API
-
-
 # rb — Complete API reference
 
 [← Back to overview](../README.md) · [Technical notes](TECHNICAL.md)
