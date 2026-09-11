@@ -256,7 +256,7 @@ not all the same size.
 | WS-range throughput | ~14 M frames/s, ~16 GB/s at 256–2044 B |
 | Governor effect on these benchmarks | Small (<10% on most rows) |
 
-### What the numbers mean for the WS use case
+### What the numbers mean for the intended use case
 
 The intended pipeline is a socket reader publishing 2 KB frames into a
 64-slot ring, with a transform consumer draining it. The 2 KB, 64-slot
