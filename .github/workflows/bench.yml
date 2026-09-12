@@ -6,10 +6,10 @@ name: Benchmarks
 on:
   schedule:
     - cron: '0 3 * * 0'      # weekly, Sunday 03:00 UTC
-  workflow_dispatch:          # allow manual trigger
+  workflow_dispatch:
 
 permissions:
-  contents: write             # needed to commit results back
+  contents: write
 
 jobs:
   bench:
@@ -20,14 +20,43 @@ jobs:
       - name: Capture runner info
         run: |
           mkdir -p benchmarks/results
-          DATE=$(date -u +%Y-%m-%d)
+          DATE=$(date -u +%Y-%m-%d-%H%M%S)
           OUT=benchmarks/results/${DATE}.txt
-          echo "=== runner info ===" > "$OUT"
-          grep -m1 'model name' /proc/cpuinfo >> "$OUT" || true
-          nproc >> "$OUT" || true
-          grep MemTotal /proc/meminfo >> "$OUT" || true
-          gcc --version | head -1 >> "$OUT"
-          echo >> "$OUT"
+          {
+            echo "=== GitHub Actions runner ==="
+            echo "date_utc: $(date -u --iso-8601=seconds)"
+            echo "runner_name: ${RUNNER_NAME}"
+            echo "runner_os: ${RUNNER_OS}"
+            echo "runner_arch: ${RUNNER_ARCH}"
+            echo "runner_environment: ${RUNNER_ENVIRONMENT:-unknown}"
+            echo "github_runner_image: ${ImageOS:-unknown}"
+            echo
+            echo "=== system ==="
+            uname -a
+            echo "kernel: $(uname -r)"
+            echo "architecture: $(uname -m)"
+            echo "logical_cpus: $(nproc)"
+            echo "online_cpus: $(getconf _NPROCESSORS_ONLN)"
+            echo "cpu_model: $(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+            echo "cpu_family: $(grep -m1 '^cpu family' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+            echo "cpu_model_id: $(grep -m1 '^model[[:space:]]*:' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+            echo "cpu_stepping: $(grep -m1 '^stepping' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+            echo "cpu_mhz: $(grep -m1 '^cpu MHz' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+            echo "ram: $(free -h | awk '/^Mem:/ {print $2}')"
+            echo "ram_bytes: $(awk '/^MemTotal:/ {print $2*1024}' /proc/meminfo)"
+            echo "cache:"
+            lscpu | grep -E '^(L1d cache|L1i cache|L2 cache|L3 cache|NUMA node|CPU\(s\):)' || true
+            echo
+            echo "=== compiler ==="
+            gcc --version | head -1
+            echo
+            echo "=== cpu flags ==="
+            grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2- | xargs
+            echo
+            echo "=== benchmark binary ==="
+            echo "compiler_flags: Release / CMake / -O2"
+          } | tee "$OUT"
+          echo "BENCH_OUT=$OUT" >> "$GITHUB_ENV"
 
       - name: Build benchmarks
         run: |
@@ -36,14 +65,21 @@ jobs:
 
       - name: Run benchmarks
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          OUT=benchmarks/results/${DATE}.txt
-          echo "=== bench_rb ===" >> "$OUT"
-          ./build-bench/bench/bench_rb >> "$OUT"
-          echo >> "$OUT"
-          echo "=== bench_rb_random ===" >> "$OUT"
-          ./build-bench/bench/bench_rb_random >> "$OUT"
-          cat "$OUT"
+          {
+            echo
+            echo "=== bench_rb ==="
+            ./build-bench/bench/bench_rb
+            echo
+            echo "=== bench_rb_random ==="
+            ./build-bench/bench/bench_rb_random
+          } | tee -a "$BENCH_OUT"
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringbuff-benchmark-${{ github.run_number }}
+          path: ${{ env.BENCH_OUT }}
+          retention-days: 90
 
       - name: Commit results
         run: |
@@ -53,6 +89,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "no changes to commit"
           else
-            git commit -m "benchmarks: $(date -u +%Y-%m-%d)"
+            git commit -m "benchmarks: $(date -u +%Y-%m-%d-%H%M%S)"
             git push
           fi
