@@ -9,6 +9,11 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__linux__)
+#include <sys/utsname.h>
+#include <unistd.h>
+#endif
+
 static void *xaligned(size_t align, size_t sz) {
     void *p = NULL;
     if (posix_memalign(&p, align, sz) || !p) {
@@ -21,6 +26,72 @@ static double now_sec(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static void print_system_info(void) {
+    printf("system:\n");
+
+#if defined(__linux__)
+    struct utsname u;
+    if (uname(&u) == 0) {
+        printf("  kernel       : %s %s %s\n", u.sysname, u.release, u.machine);
+    }
+    printf("  logical CPUs : %ld\n", sysconf(_SC_NPROCESSORS_ONLN));
+
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        char line[512];
+        int printed_model = 0;
+        int printed_flags = 0;
+        while (fgets(line, sizeof line, f)) {
+            if (!printed_model && strncmp(line, "model name", 10) == 0) {
+                char *p = strchr(line, ':');
+                if (p) {
+                    p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    p[strcspn(p, "\r\n")] = '\0';
+                    printf("  CPU          : %s\n", p);
+                    printed_model = 1;
+                }
+            }
+            if (!printed_flags && strncmp(line, "flags", 5) == 0) {
+                char *p = strchr(line, ':');
+                if (p) {
+                    p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    p[strcspn(p, "\r\n")] = '\0';
+                    printf("  CPU flags    : %s\n", p);
+                    printed_flags = 1;
+                }
+            }
+            if (printed_model && printed_flags) break;
+        }
+        fclose(f);
+    }
+
+    f = fopen("/proc/meminfo", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "MemTotal:", 9) == 0) {
+                unsigned long long kb = 0;
+                if (sscanf(line + 9, "%llu", &kb) == 1) {
+                    printf("  RAM          : %llu MiB\n", kb / 1024ull);
+                }
+                break;
+            }
+        }
+        fclose(f);
+    }
+#else
+    printf("  OS           : non-Linux (runner-specific details unavailable)\n");
+#endif
+
+    printf("  compiler     : %s\n", __VERSION__);
+    printf("  C standard   : C%ld\n", (long)__STDC_VERSION__);
+    printf("  optimization : benchmark target is normally built with -O2\n");
+    printf("  sizeof(void*) : %zu bytes\n", sizeof(void *));
+    printf("\n");
 }
 
 static void bench_one(uint32_t slot_size, uint32_t cap, uint32_t iters) {
@@ -77,7 +148,8 @@ static void bench_one(uint32_t slot_size, uint32_t cap, uint32_t iters) {
 int main(void) {
     printf("rb single-threaded full cycle benchmark\n");
     printf("(1 cycle = acquire + publish + consume + release)\n");
-    printf("-------------------------------------------------\n");
+    printf("-------------------------------------------------\n\n");
+    print_system_info();
 
     const uint32_t iters = 2000000u;
     const uint32_t sizes[] = { 64u, 256u, 2048u, 8192u };
