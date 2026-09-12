@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 H. De Pauw
+
+name: Wraparound Harness
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'test_harness/**'
+      - '.github/workflows/wraparound.yml'
+  workflow_dispatch:
+
+jobs:
+  wraparound:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wraparound harness
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Wpedantic \
+             -Iinclude test_harness/wraparound.c \
+             -o wraparound-test
+
+      - name: Run wraparound harness
+        run: ./wraparound-test
+
+      - name: Build with sanitizers
+        run: |
+          cc -std=c11 -O1 -g -fsanitize=address,undefined \
+             -fno-omit-frame-pointer -Wall -Wextra \
+             -Iinclude test_harness/wraparound.c \
+             -o wraparound-test-asan
+
+      - name: Run sanitizer harness
+        run: ./wraparound-test-asan
