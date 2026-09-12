@@ -6,7 +6,7 @@ A tiny C11 library for a single-producer / single-consumer FIFO of references in
 
 ![rb architecture](docs/rb-architecture.svg)
 
-A bounded queue that holds indices (or pointers) into a preallocated scratchpad of fixed-size slots. The producer writes directly into a slot, publishes its index, and moves on. The consumer reads directly from the same slot and releases it. No payload is ever copied through the queue. text
+A bounded queue that holds indices (or pointers) into a preallocated scratchpad of fixed-size slots. The producer writes directly into a slot, publishes its index, and moves on. The consumer reads directly from the same slot and releases it. No payload is ever copied through the queue. 
 
 ```
  producer                          consumer
