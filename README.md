@@ -32,8 +32,8 @@ A queue of indices into a fixed-stride arena is the natural answer. This library
 - No dependencies. Core library uses only stdint.h, stddef.h, stdbool.h, and <stdatomic.h>. No libc, no POSIX, no allocation.
 - Caller provides both the control block and the scratchpad.
 - Fast. ~22 ns for a full acquire/publish/consume/release cycle on x86_64, at any slot size from 64 B to 8 KB and any capacity from 64 to
-- Saturates memory bandwidth around 15 GB/s at 2 KB payloads.
-- Correct. Validated under ThreadSanitizer (no races) and AddressSanitizer + UBSan (no UB, no out-of-bounds). 2 M-item SPSC stress test with no loss, no duplication, strict FIFO.
+- Saturates memory bandwidth around 15 GB/s at 2 KB payloads. (see benchmarks)
+- Validated under ThreadSanitizer (no races) and AddressSanitizer + UBSan (no UB, no out-of-bounds). 2 M-item SPSC stress test with no loss, no duplication, strict FIFO.
 - Small. Static library is a few KB. RB_SINGLE_THREADED=1 compiles away atomics and barriers, leaving a plain circular FIFO with a mask.
 - Cross-compile ready. CMake toolchain files for ARM Linux and Android arm64 are included. No host assumptions in the core.
 - Configurable at compile time and runtime. Compile-time macros change ABI (entry type, cache-line padding, stats). Runtime setters override policy (capacity, limit, thresholds, callbacks, stack sizes)  without recompiling.
@@ -45,7 +45,7 @@ A queue of indices into a fixed-stride arena is the natural answer. This library
 Being honest about what this is not:
 
 - SPSC only. Exactly one producer thread and one consumer thread. No MPSC, no MPMC, no work stealing. Adding a second producer will race.
-- Fixed-stride slots. Every slot is the same size. A 64-byte frame occupies a 2 KB slot. If your workload has a wide size distribution and memory is tight, you want size classes (multiple rings) or a real arena with a free list — this library is neither.
+- Fixed-stride slots. Every slot is the same size. A 64-byte frame occupies a 2 KB slot. If your workload has a wide size distribution and memory is tight, you want size classes (multiple rings) or a real arena with a free list - this library is neither.
 - Strict FIFO release order. The consumer releases slots in the order it consumed them. Out-of-order release would require a free-list ring and is not implemented. For a straight pipeline this is a non-issue; for a reorder buffer it is a blocker.
 - Oversize handling is a policy, not magic. Under the default TRUNCATE policy, a payload larger than slot_size - 4 is written up to capacity and flagged TRUNCATED. The library never silently forwards a partial object as complete, but the caller still has to decide what to do with the flag.
 - Not a scheduler. The library never spawns a thread and never owns an event loop. rb_thread.* and rb_notify.* are optional helpers; they exist so you don't have to write them, not because the library wants to be a runtime.
@@ -55,6 +55,10 @@ Being honest about what this is not:
 ## No benchmarks against competitors. 
 
 It is not the goal of this project to be the fastest SPSC ring in existence. It aims to be fast, predictable, dependency-free, and easy to reason about.
+
+## DOCS
+
+All info, use cases, benchmarks and others are in the docs folder
 
 ## Call sequence 
 
