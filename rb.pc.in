@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: rb
+Description: Zero-copy SPSC ring buffer with scratchpad
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lrb
+Cflags: -I${includedir}
