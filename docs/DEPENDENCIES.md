@@ -20,8 +20,9 @@ document explains each entry.
 | Compile (optional) | `<sys/eventfd.h>` | Only if `RB_ENABLE_NOTIFY=1` on Linux |
 | Link (core) | libc | Yes |
 | Link (optional) | `libpthread` / `Threads::Threads` | Only if `RB_ENABLE_THREAD_HELPERS=1` |
-| Build | CMake ≥ 3.16 | Yes |
-| Runtime | None | — |
+| Build           | CMake ≥ 3.16                      | Yes                                  |
+| Runtime         | None                              | —                                    |
+| Link (IPC Examples only) | librt | Only on glibc < 2.34 |
 
 The core library has **no runtime dependencies beyond libc**. Everything
 else is opt-in.
@@ -81,6 +82,13 @@ Android). It is compiled only when `RB_ENABLE_NOTIFY=1`, which is
 
 `RB_NOTIFY_BACKEND=RB_NOTIFY_NONE` compiles the same file with all
 operations reduced to no-ops, requiring no system headers at all.
+
+### <librt>
+
+The IPC examples link librt for shm_open/shm_unlink on systems
+with glibc before 2.34. On newer systems the symbols are in libc and
+ -lrt is a harmless no-op.
+
 
 ---
 
@@ -172,6 +180,57 @@ nothing else.
 ---
 
 ## The pthread question
+
+TODO <fixme>
+
+## The pthread question
+
+`rb_thread.c` is compiled into its own static library, `rb_thread`.
+Consumers opt in by linking it:
+
+    target_link_libraries(myapp PRIVATE rb)         # ring only, no pthread
+    target_link_libraries(myapp PRIVATE rb_thread)  # ring + thread helpers
+
+The core `rb` library has no dependency on pthread. On embedded builds
+with `RB_ENABLE_THREAD_HELPERS=OFF`, `rb_thread` is not built at all,
+and `rb_thread.h` compiles to an empty translation unit.
+
+## The pthread question
+
+`rb_thread.c` exists to save the caller from writing the same
+`pthread_create` boilerplate. It is a convenience, not a core feature.
+
+**The problem:** in the current build, `Threads::Threads` is linked as
+`PUBLIC`, which means every consumer — even one that only calls
+`rb_acquire` and `rb_publish` — inherits the pthread dependency.
+
+**The fix:** separate the helper into its own interface target so
+consumers opt in explicitly.
+
+```cmake
+# Top-level CMakeLists.txt
+if (RB_ENABLE_THREAD_HELPERS)
+    target_sources(rb PRIVATE src/rb_thread.c)
+    find_package(Threads REQUIRED)
+
+    add_library(rb_thread_helpers INTERFACE)
+    target_link_libraries(rb_thread_helpers INTERFACE Threads::Threads)
+    target_link_libraries(rb_thread_helpers INTERFACE rb)
+endif()
+```
+
+Consumers then choose:
+
+```cmake
+# Ring only — no pthread
+target_link_libraries(myapp PRIVATE rb)
+
+# Ring + thread helpers — pthread pulled in
+target_link_libraries(myapp PRIVATE rb_thread_helpers)
+```
+
+This is the same pattern used by liblzma and several other C libraries
+that have optional threading support.
 
 `rb_thread.c` exists to save the caller from writing the same
 `pthread_create` boilerplate. It is a convenience, not a core feature.
