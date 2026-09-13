@@ -26,14 +26,19 @@
 #if RB_USE_ATOMICS
 #  include <stdatomic.h>
    typedef _Atomic uint32_t rb_atomic_u32;
+   typedef _Atomic uint64_t rb_atomic_u64;
 #  define RB_ATOMIC_LOAD_ACQ(p)    atomic_load_explicit((p), memory_order_acquire)
 #  define RB_ATOMIC_LOAD_RLX(p)    atomic_load_explicit((p), memory_order_relaxed)
 #  define RB_ATOMIC_STORE_REL(p,v) atomic_store_explicit((p),(v), memory_order_release)
 #  define RB_ATOMIC_STORE_RLX(p,v) atomic_store_explicit((p),(v), memory_order_relaxed)
 #  define RB_ATOMIC_FETCH_ADD(p,v) atomic_fetch_add_explicit((p),(v),memory_order_relaxed)
 #  define RB_ATOMIC_FETCH_SUB(p,v) atomic_fetch_sub_explicit((p),(v),memory_order_relaxed)
+#  define RB_ATOMIC_LOAD_U64_ACQ(p) atomic_load_explicit((p), memory_order_acquire)
+#  define RB_ATOMIC_STORE_U64_RLX(p,v) atomic_store_explicit((p),(v), memory_order_relaxed)
+#  define RB_ATOMIC_FETCH_ADD_U64(p,v) atomic_fetch_add_explicit((p),(v),memory_order_relaxed)
 #else
    typedef volatile uint32_t rb_atomic_u32;
+   typedef volatile uint64_t rb_atomic_u64;
 #  if RB_SINGLE_THREADED
 #    define RB_ATOMIC_LOAD_ACQ(p)    (*(p))
 #    define RB_ATOMIC_LOAD_RLX(p)    (*(p))
@@ -41,6 +46,9 @@
 #    define RB_ATOMIC_STORE_RLX(p,v) do { *(p)=(v); } while (0)
 #    define RB_ATOMIC_FETCH_ADD(p,v) (*(p) += (v), *(p) - (v))
 #    define RB_ATOMIC_FETCH_SUB(p,v) (*(p) -= (v), *(p) + (v))
+#    define RB_ATOMIC_LOAD_U64_ACQ(p) (*(p))
+#    define RB_ATOMIC_STORE_U64_RLX(p,v) do { *(p)=(v); } while (0)
+#    define RB_ATOMIC_FETCH_ADD_U64(p,v) (*(p) += (v), *(p) - (v))
 #  elif defined(__GNUC__) || defined(__clang__)
 #    define RB_ATOMIC_LOAD_ACQ(p)    (*(p))
 #    define RB_ATOMIC_LOAD_RLX(p)    (*(p))
@@ -48,6 +56,9 @@
 #    define RB_ATOMIC_STORE_RLX(p,v) do { *(p)=(v); } while (0)
 #    define RB_ATOMIC_FETCH_ADD(p,v) __atomic_fetch_add((p),(v),__ATOMIC_RELAXED)
 #    define RB_ATOMIC_FETCH_SUB(p,v) __atomic_fetch_sub((p),(v),__ATOMIC_RELAXED)
+#    define RB_ATOMIC_LOAD_U64_ACQ(p) __atomic_load_n((p),__ATOMIC_ACQUIRE)
+#    define RB_ATOMIC_STORE_U64_RLX(p,v) __atomic_store_n((p),(v),__ATOMIC_RELAXED)
+#    define RB_ATOMIC_FETCH_ADD_U64(p,v) __atomic_fetch_add((p),(v),__ATOMIC_RELAXED)
 #  else
 #    error "No atomic implementation available for this target"
 #  endif
