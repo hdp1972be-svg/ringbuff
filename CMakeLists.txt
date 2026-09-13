@@ -58,14 +58,19 @@ endif()
 
 # ---------------- Optional: thread helpers (separate static lib) ----------------
 # Consumers who only use the ring link `rb`. Consumers who call
-# rb_thread_spawn link `rb_thread`, which pulls in Threads::Threads.
+# rb_thread_spawn link `rb_thread_helpers`, which pulls in the helper
+# library and Threads::Threads explicitly.
 if (RB_ENABLE_THREAD_HELPERS)
     find_package(Threads REQUIRED)
 
     add_library(rb_thread STATIC src/rb_thread.c)
-    target_link_libraries(rb_thread PUBLIC rb)
-    target_link_libraries(rb_thread PUBLIC Threads::Threads)
+    target_link_libraries(rb_thread PRIVATE Threads::Threads)
+    target_link_libraries(rb_thread PRIVATE rb)
     target_compile_definitions(rb_thread PUBLIC RB_ENABLE_THREAD_HELPERS=1)
+
+    # Explicit opt-in target: the core `rb` target never propagates pthread.
+    add_library(rb_thread_helpers INTERFACE)
+    target_link_libraries(rb_thread_helpers INTERFACE rb_thread)
 
     if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(rb_thread PRIVATE
@@ -106,7 +111,7 @@ install(TARGETS rb
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 if (RB_ENABLE_THREAD_HELPERS)
-    install(TARGETS rb_thread
+    install(TARGETS rb_thread rb_thread_helpers
         EXPORT rbTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
