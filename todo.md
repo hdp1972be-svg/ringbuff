@@ -50,47 +50,23 @@ cmake --build build -j
 
 1. Graceful shutdown — the biggest gap
 
-Every example checks a stop / producer_done flag, and every one of them has a subtle race. The consumer reads done=true, breaks, and misses whatever the producer published just before setting it. Or it drains one last time, but the producer published between the drain and the check.
+PENDING — shutdown protocol has not yet been changed. The producer/consumer termination handshake still needs to be designed and applied consistently across the examples.
 
-The correct pattern is a three-part condition:
-c
+2. ABA on the futex word — DONE (bounded backstop)
 
-for (;;) {
-    rb_drain(rb, fn, user);
-    if (atomic_load(&producer_done) && rb_is_empty(rb)) break;
-    /* else: snapshot, wait, retry */
-}
+rb_wait() now uses a bounded futex sleep interval (RB_NOTIFY_WAIT_SLICE_MS, default 1000 ms), rechecks the ring between slices, and uses a monotonic-clock deadline for finite waits. This prevents an indefinite stale sleep if the uint32 head sequence wraps back to the expected value. The futex word remains the uint32 head; a separate 64-bit sequence is therefore not claimed as a kernel-level ABA fix.
 
-But even that has a window. The producer must:
-c
+3. EINTR handling in rb_wait — DONE
 
-/* publish everything */
-atomic_store_release(&producer_done, true);
-/* then notify one last time so an asleep consumer re-checks */
-rb_signal_notify(&sig, RB_SIG_DATA);
+rb_wait() now retries futex waits interrupted by EINTR and preserves the caller's total timeout rather than returning -EINTR. The ring is rechecked after wakeups/interruption.
 
-And the consumer must re-check the ring after seeing done, because the producer might have published between the last drain and the store to done. This is the "termination handshake" and it's genuinely tricky.
+4. Cross-process notification — PARTIAL
 
-For the 500-node scenario, this becomes the actor termination problem — every node needs a defined shutdown protocol. Worth designing before you build the bus.
-2. ABA on the futex word
-
-STATUS: PARTIAL — bounded wait-slice configuration has been added; the futex still uses the uint32 head word and the monotonic sequence counter is not yet wired into rb_wait.
-
-rb_wait(rb, expected, timeout) uses head as the futex word. head is uint32_t. At 70M ops/s, it wraps in ~61 seconds.
-
-If the consumer snapshots head = V, then drains for 61 seconds (blocked on something, or the system suspends), the producer can wrap all the way around to V. futex_wait(&head, V) sees head == V and sleeps. A finite wait backstop avoids an infinite stale wait.
-
-3. EINTR handling in rb_wait
-
-PENDING — rb_wait still returns EINTR; the retry loop has not yet been implemented.
-
-4. Cross-process notification
-
-PARTIAL — RB_FUTEX_SHARED=0 configuration support has been added to the portability configuration, but rb.c/CMake wiring and IPC validation are still pending.
+RB_FUTEX_SHARED is now exposed by CMake and switches rb_wait/rb_futex_wake between FUTEX_WAIT(_PRIVATE) and FUTEX_WAKE(_PRIVATE). IPC validation and a dedicated cross-process regression test are still pending. eventfd remains process-local unless its descriptor is explicitly shared by the application.
 
 5. False sharing at the ring/scratchpad boundary — DONE (documented)
 
-The cache-line layout guidance is now documented in docs/CACHE_LAYOUT.md. It specifies rb_size(capacity) as the authoritative control-block size and documents cache-line alignment for an adjacent scratchpad. The existing IPC layout rounding remains the required IPC-specific protection.
+The cache-line layout guidance is documented in docs/CACHE_LAYOUT.md. It specifies rb_size(capacity) as the authoritative control-block size and documents cache-line alignment for an adjacent scratchpad. The existing IPC layout rounding remains the required IPC-specific protection.
 
 6. NUMA and affinity hints — DONE (documented)
 
@@ -110,13 +86,13 @@ The producer writes into N slots, then a single head += n with release ordering 
 
 This is what the LFQueue benchmark (121 M ops/s → 412 M with batching) is measuring. It's a real 3–4× throughput win at the cost of a more complex API. Whether it's worth it depends on whether the single-item API is your bottleneck. For WS frames, it isn't. For high-frequency packet processing, it is.
 
-8. pkg-config file
+8. pkg-config file — DONE
 
-PARTIAL — rb.pc.in has been added. CMake install/configure wiring is still pending, so the installed package does not yet provide rb.pc.
+rb.pc.in is now configured by CMake at build time and installed to ${CMAKE_INSTALL_LIBDIR}/pkgconfig as rb.pc. The generated file uses the configured install prefix/libdir/includedir and project version.
 
-9. Fuzzing the state machine
+9. Fuzzing the state machine — PARTIAL
 
-PARTIAL — fuzz/rb_state.c has been added as a libFuzzer entry point. CMake integration and an actual fuzz run are still pending.
+fuzz/rb_state.c is now integrated as an optional rb_fuzz_state executable through RB_BUILD_FUZZERS. The target requires Clang/libFuzzer and uses address + libFuzzer sanitizers. An actual fuzz run and CI job have not yet been executed/added, so this remains partial.
 
 The harness exercises acquire/publish/abort, consume/release, drain, and state queries while checking the basic count/capacity invariant. It won't find race conditions — that's what TSan does.
 
