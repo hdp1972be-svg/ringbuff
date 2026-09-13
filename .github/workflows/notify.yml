@@ -1,0 +1,16 @@
+name: notification
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build notification test
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Wpedantic -DRB_ENABLE_NOTIFY=1 -Iinclude \
+            src/rb.c test_harness/notify.c -pthread -o notify-test
+      - name: Run notification test
+        run: ./notify-test
