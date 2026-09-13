@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* SPDX-License-Identifier: MIT */
 #include "rb.h"
 #include <errno.h>
@@ -71,7 +72,11 @@ int main(void) {
     if (rb_notify_drain_fd(rb) != 0) return 21;
     if (rb_count(rb) != 1u) return 22;
 
-    if (rb_consume(rb, &slot, &w, &cap, NULL) != RB_OK) return 23;
+    uint32_t out_len = 0;
+    const void *obj = NULL;
+    bool truncated = false;
+    if (rb_consume(rb, &slot, &obj, &out_len, &truncated) != RB_OK) return 23;
+    if (out_len != 1u || truncated || *(const unsigned char *)obj != 0x42) return 25;
     if (rb_release(rb, slot) != RB_OK) return 24;
 
     g_done = 1;
