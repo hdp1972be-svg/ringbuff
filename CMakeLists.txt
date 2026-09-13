@@ -12,12 +12,17 @@ option(RB_SINGLE_THREADED       "Single-threaded / no atomics mode"             
 option(RB_USE_ATOMICS           "Use C11 <stdatomic.h>"                          ON)
 option(RB_ENABLE_STATS          "Compile in statistics counters"                 ON)
 option(RB_ENABLE_THREAD_HELPERS "Build pthread spawn/join helper"                ON)
-option(RB_ENABLE_NOTIFY         "Build futex/eventfd wake-up helpers"            ON)
+option(RB_ENABLE_NOTIFY         "Build futex/eventfd wake-up helpers"             ON)
 option(RB_ENABLE_SIGNAL         "Build rb_signal primitive"                      OFF)
 option(RB_SIZE_OPTIMIZED        "Prefer size over speed (-Os)"                   OFF)
 option(RB_BUILD_TESTS           "Build unit tests"                               OFF)
 option(RB_BUILD_BENCH           "Build benchmarks"                               OFF)
 option(RB_BUILD_EXAMPLES        "Build examples"                                 OFF)
+
+# Optional low-level memory hooks. Keep the defaults as the normal libc calls;
+# embedded builds can replace them with target-specific implementations.
+set(RB_MEMCPY "memcpy" CACHE STRING "Function used for rb memcpy operations")
+set(RB_MEMSET "memset" CACHE STRING "Function used for rb memset operations")
 
 # ---------------- Numeric defaults ----------------
 set(RB_SLOT_SIZE  2048 CACHE STRING "Slot size in bytes (incl. header)")
@@ -45,6 +50,14 @@ target_compile_definitions(rb PUBLIC
     $<$<BOOL:${RB_USE_ATOMICS}>:RB_USE_ATOMICS=1>
     $<$<BOOL:${RB_ENABLE_STATS}>:RB_ENABLE_STATS=1>
     $<$<BOOL:${RB_ENABLE_NOTIFY}>:RB_ENABLE_NOTIFY=1>)
+
+# Apply memory hooks only while compiling the library. They are not exported
+# as usage requirements to applications.
+target_compile_definitions(rb PRIVATE
+    RB_MEMCPY=${RB_MEMCPY}
+    RB_MEMSET=${RB_MEMSET}
+    memcpy=RB_MEMCPY
+    memset=RB_MEMSET)
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rb PRIVATE
@@ -123,6 +136,7 @@ install(FILES
     include/rb_config.h
     include/rb_port.h
     include/rb_thread.h
+    include/rb_notify.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 install(EXPORT rbTargets
