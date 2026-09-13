@@ -55,9 +55,7 @@ target_compile_definitions(rb PUBLIC
 # as usage requirements to applications.
 target_compile_definitions(rb PRIVATE
     RB_MEMCPY=${RB_MEMCPY}
-    RB_MEMSET=${RB_MEMSET}
-    memcpy=RB_MEMCPY
-    memset=RB_MEMSET)
+    RB_MEMSET=${RB_MEMSET})
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rb PRIVATE
