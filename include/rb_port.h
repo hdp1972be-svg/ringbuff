@@ -8,8 +8,7 @@
 #include <string.h>
 #include "rb_config.h"
 
-/* Optional platform overrides. Define these before including rb_port.h or
- * pass them as compiler definitions, e.g. -DRB_MEMCPY=my_memcpy. */
+/* Optional platform overrides. */
 #ifndef RB_MEMCPY
 #  define RB_MEMCPY memcpy
 #endif
@@ -17,13 +16,20 @@
 #  define RB_MEMSET memset
 #endif
 
+/* rb.c includes this low-level port header before using memcpy/memset.
+ * Redirect those operations here so both CMake and direct builds honor the
+ * hooks without requiring edits to the implementation source. With the
+ * defaults this expands back to the normal libc functions. */
+#define memcpy RB_MEMCPY
+#define memset RB_MEMSET
+
 #if RB_USE_ATOMICS
 #  include <stdatomic.h>
    typedef _Atomic uint32_t rb_atomic_u32;
 #  define RB_ATOMIC_LOAD_ACQ(p)    atomic_load_explicit((p), memory_order_acquire)
 #  define RB_ATOMIC_LOAD_RLX(p)    atomic_load_explicit((p), memory_order_relaxed)
-#  define RB_ATOMIC_STORE_REL(p,v) atomic_store_explicit((p),(v),memory_order_release)
-#  define RB_ATOMIC_STORE_RLX(p,v) atomic_store_explicit((p),(v),memory_order_relaxed)
+#  define RB_ATOMIC_STORE_REL(p,v) atomic_store_explicit((p),(v), memory_order_release)
+#  define RB_ATOMIC_STORE_RLX(p,v) atomic_store_explicit((p),(v), memory_order_relaxed)
 #  define RB_ATOMIC_FETCH_ADD(p,v) atomic_fetch_add_explicit((p),(v),memory_order_relaxed)
 #  define RB_ATOMIC_FETCH_SUB(p,v) atomic_fetch_sub_explicit((p),(v),memory_order_relaxed)
 #else
