@@ -22,6 +22,16 @@ The important property is that **the core `rb` target does not link pthread**. T
 
 ---
 
+## NUMA and CPU affinity
+
+The SPSC protocol is cache-friendly when producer and consumer execute on the same NUMA node. On multi-socket systems, pin the producer and consumer to cores on the same socket when latency matters, and allocate the scratchpad from the consumer's NUMA node when the consumer is the dominant reader of payload data.
+
+Cross-node cache-line transfers can materially increase latency; the exact penalty is hardware- and workload-dependent, so benchmark the target machine rather than relying on a fixed nanosecond figure.
+
+These are placement recommendations, not library requirements. The ring remains correct without affinity or NUMA configuration.
+
+---
+
 ## Core library
 
 `rb` is built from `src/rb.c` and has no dependency on `pthread`, `eventfd`, or an event loop.
@@ -63,10 +73,6 @@ target_link_libraries(myapp PRIVATE rb)
 target_link_libraries(myapp PRIVATE rb_thread_helpers)
 ```
 
-CMake's `PRIVATE` scope keeps `Threads::Threads` out of the `rb` target's usage requirements; the helper interface is the explicit opt-in path. citeturn0search0turn0search8
-
-The installed package config may still locate `Threads` when thread helpers were built, because the exported optional helper target refers to it. That does **not** make `rb` itself link pthread.
-
 ---
 
 ## Memory-copy hooks
@@ -82,33 +88,13 @@ The portability layer provides:
 #endif
 ```
 
-The CMake build also exposes these as cache variables:
-
-```bash
-cmake -B build \
-    -DRB_MEMCPY=my_fast_memcpy \
-    -DRB_MEMSET=my_fast_memset
-```
-
-They are private build definitions for the library, so the override does not become a requirement of applications linking `rb`. CMake target compile definitions are target-specific unless marked `PUBLIC` or `INTERFACE`. citeturn1search0turn1search6
-
-The default remains the standard `memcpy`/`memset` implementation. The hooks are intended mainly for embedded ports with a known platform-specific implementation.
-
-For direct non-CMake compilation, define the hooks in the compiler invocation or port layer consistently with the selected implementation, for example:
-
-```bash
-cc -DRB_MEMCPY=my_fast_memcpy \
-   -DRB_MEMSET=my_fast_memset \
-   ...
-```
+The CMake build also exposes these as cache variables. They are private build definitions for the library, so the override does not become a requirement of applications linking `rb`.
 
 ---
 
 ## Notification backend: futex + eventfd
 
-`RB_ENABLE_NOTIFY` enables the notification implementation directly in `src/rb.c`; there is no separate `rb_notify.c` implementation anymore.
-
-The public declarations live in `include/rb.h`. `include/rb_notify.h` remains only as a compatibility header that includes `rb.h`.
+`RB_ENABLE_NOTIFY` enables the notification implementation directly in `src/rb.c`. The public declarations live in `include/rb.h`; `include/rb_notify.h` remains a compatibility shim.
 
 The API is guarded by:
 
@@ -116,91 +102,19 @@ The API is guarded by:
 #if RB_ENABLE_NOTIFY && defined(__linux__)
 ```
 
-That means the backend is selected by the compiler's Linux platform definition rather than by a separate Android macro. **Android inherits this Linux path because Android defines `__linux__`**, while bare-metal targets do not and therefore do not expose the notification API.
+The notification implementation uses futexes for sleeping/waking a consumer thread and `eventfd` for fd-based integration with `poll`, `epoll`, libuv, libev, and similar event loops.
 
-The notification implementation uses:
+The feature is a wake-up hint only. The ring's release/acquire publication remains the ownership and memory-ordering protocol. Consumers must always recheck/drain the ring after a wake-up.
 
-- futexes for sleeping/waking a consumer thread;
-- `eventfd` for fd-based integration with `poll`, `epoll`, libuv, libev, and similar event loops.
+---
 
-The feature is intended as a wake-up hint only. The ring's existing release/acquire publication remains the ownership and memory-ordering protocol.
-
-Typical setup:
-
-```c
-int fd = rb_notify_fd(rb);
-/* register fd with poll/epoll/event loop */
-```
-
-On readability:
-
-```c
-rb_notify_drain_fd(rb);
-rb_drain(rb, consume_one, user);
-```
-
-For a sleeping consumer without an fd-based event loop:
-
-```c
-uint32_t expected = rb_notify_value(rb);
-if (rb_count(rb) == 0)
-    rb_wait(rb, expected, -1);
-```
-
-The consumer must always recheck/drain the ring after a wake-up. Notifications may be coalesced.
-
-### Platform matrix
+## Platform matrix
 
 | Configuration | Core | Thread helpers | Notification |
 |---|---|---|---|
 | Linux | Yes | Optional pthread | Optional futex + eventfd |
 | Android | Yes | Optional pthread/Bionic threads | Optional Linux futex + eventfd path |
-| Other hosted POSIX | Yes | Optional, platform-dependent `Threads::Threads` | Not provided by this backend |
+| Other hosted POSIX | Yes | Optional | Not provided by this backend |
 | Bare metal | Yes | Normally OFF | Not provided |
 
 For embedded/bare-metal builds, use `RB_ENABLE_NOTIFY=OFF` and `RB_ENABLE_THREAD_HELPERS=OFF`.
-
----
-
-## `rb_notify.h`
-
-`include/rb_notify.h` is intentionally a compatibility shim:
-
-```c
-#include "rb.h"
-```
-
-New code should include `rb.h` directly. Keeping the header avoids unnecessarily breaking code that used the earlier separate notification header.
-
----
-
-## Recommended embedded configuration
-
-```bash
-cmake -B build-embedded \
-    -DRB_SINGLE_THREADED=ON \
-    -DRB_ENABLE_THREAD_HELPERS=OFF \
-    -DRB_ENABLE_NOTIFY=OFF \
-    -DRB_ENABLE_STATS=OFF \
-    -DRB_SIZE_OPTIMIZED=ON
-```
-
-If the platform supplies its own optimized memory primitives, additionally set `RB_MEMCPY` and `RB_MEMSET`.
-
----
-
-## What the core deliberately does not depend on
-
-The core `rb` target does not require:
-
-- pthread;
-- futexes;
-- eventfd;
-- an event loop;
-- dynamic allocation;
-- a particular Linux distribution;
-- GPU/NIC/FPGA runtime libraries.
-
-Device-visible memory, DMA synchronization, cache maintenance, fences, IOMMU mappings, and similar hardware-specific mechanisms remain the responsibility of the surrounding platform integration.
-
-See [USE_CASES_NOTIFY.md](USE_CASES_NOTIFY.md) for the futex/eventfd usage patterns and [USE_CASES.md](USE_CASES.md) for the broader scratchpad use cases.
