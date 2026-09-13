@@ -75,7 +75,7 @@
    infinite waits. Bounding the sleep prevents a 32-bit futex compare value
    from becoming an indefinite ABA wait if the ring sequence wraps. */
 #ifndef RB_NOTIFY_WAIT_SLICE_MS
-#define RB_NOTIFY_WAIT_SLICE_MS 1000u
+#define RB_NOTIFY_WAIT_SLICE_MS 100u
 #endif
 
 /* Low-water defaults, percentages of `limit`. 0 disables a threshold. */
