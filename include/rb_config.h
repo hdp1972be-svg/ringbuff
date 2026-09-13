@@ -60,6 +60,12 @@
 #define RB_ENABLE_THREAD_HELPERS 1
 #endif
 
+/* 1 = Linux futex + eventfd notification support. Default off so the
+   normal build remains POSIX/Linux-independent and adds no notify state. */
+#ifndef RB_ENABLE_NOTIFY
+#define RB_ENABLE_NOTIFY      0
+#endif
+
 /* Low-water defaults, percentages of `limit`. 0 disables a threshold. */
 #ifndef RB_DEFAULT_LOW_D
 #define RB_DEFAULT_LOW_D      25u
