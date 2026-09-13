@@ -5,7 +5,18 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <string.h>
 #include "rb_config.h"
+
+/* Optional platform overrides. Define these before including rb_port.h or
+ * pass them as compiler definitions, e.g. -DRB_MEMCPY=my_memcpy. */
+#ifndef RB_MEMCPY
+#  define RB_MEMCPY memcpy
+#endif
+#ifndef RB_MEMSET
+#  define RB_MEMSET memset
+#endif
+
 #if RB_USE_ATOMICS
 #  include <stdatomic.h>
    typedef _Atomic uint32_t rb_atomic_u32;
