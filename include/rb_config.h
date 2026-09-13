@@ -66,6 +66,18 @@
 #define RB_ENABLE_NOTIFY      0
 #endif
 
+/* 1 = use process-shared futex operations for notification waits. */
+#ifndef RB_FUTEX_SHARED
+#define RB_FUTEX_SHARED       0
+#endif
+
+/* Maximum individual futex sleep interval used by rb_wait(), including
+   infinite waits. Bounding the sleep prevents a 32-bit futex compare value
+   from becoming an indefinite ABA wait if the ring sequence wraps. */
+#ifndef RB_NOTIFY_WAIT_SLICE_MS
+#define RB_NOTIFY_WAIT_SLICE_MS 1000u
+#endif
+
 /* Low-water defaults, percentages of `limit`. 0 disables a threshold. */
 #ifndef RB_DEFAULT_LOW_D
 #define RB_DEFAULT_LOW_D      25u
