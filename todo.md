@@ -54,7 +54,7 @@ PENDING — shutdown protocol has not yet been changed. The producer/consumer te
 
 2. ABA on the futex word — DONE (bounded backstop)
 
-rb_wait() now uses a bounded futex sleep interval (RB_NOTIFY_WAIT_SLICE_MS, default 1000 ms), rechecks the ring between slices, and uses a monotonic-clock deadline for finite waits. This prevents an indefinite stale sleep if the uint32 head sequence wraps back to the expected value. The futex word remains the uint32 head; a separate 64-bit sequence is therefore not claimed as a kernel-level ABA fix.
+rb_wait() now uses a bounded futex sleep interval (RB_NOTIFY_WAIT_SLICE_MS, default 100 ms), rechecks the ring between slices, and uses a monotonic-clock deadline for finite waits. This prevents an indefinite stale sleep if the uint32 head sequence wraps back to the expected value. The futex word remains the uint32 head; a separate 64-bit sequence is therefore not claimed as a kernel-level ABA fix.
 
 3. EINTR handling in rb_wait — DONE
 
@@ -90,11 +90,11 @@ This is what the LFQueue benchmark (121 M ops/s → 412 M with batching) is meas
 
 rb.pc.in is now configured by CMake at build time and installed to ${CMAKE_INSTALL_LIBDIR}/pkgconfig as rb.pc. The generated file uses the configured install prefix/libdir/includedir and project version.
 
-9. Fuzzing the state machine — PARTIAL
+9. Fuzzing the state machine — DONE (integrated + smoke test)
 
-fuzz/rb_state.c is now integrated as an optional rb_fuzz_state executable through RB_BUILD_FUZZERS. The target requires Clang/libFuzzer and uses address + libFuzzer sanitizers. An actual fuzz run and CI job have not yet been executed/added, so this remains partial.
+fuzz/rb_state.c is integrated as an optional rb_fuzz_state executable through RB_BUILD_FUZZERS. The target requires Clang/libFuzzer, instruments both the harness and core rb library with AddressSanitizer + UndefinedBehaviorSanitizer, and registers an rb_fuzz_smoke CTest that runs 1000 fuzzing iterations with inputs capped at 128 bytes.
 
-The harness exercises acquire/publish/abort, consume/release, drain, and state queries while checking the basic count/capacity invariant. It won't find race conditions — that's what TSan does.
+The harness exercises acquire/publish/abort, consume/release, drain callbacks, and state queries while maintaining a model count and checking it against rb_count(). It won't find race conditions — that's what TSan does. The smoke test is defined but has not been executed in this environment.
 
 10. Signal handling during the wait
 
