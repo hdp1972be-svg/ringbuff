@@ -39,6 +39,7 @@ A queue of indices into a fixed-stride arena is the natural answer. This library
 - Configurable at compile time and runtime. Compile-time macros change ABI (entry type, cache-line padding, stats). Runtime setters override policy (capacity, limit, thresholds, callbacks, stack sizes)  without recompiling.
 - Callback model that doesn't fight you. Threshold callbacks (on_full, on_low_d, on_low_e) are latched — they fire once when the ring enters the warning region, not on every refill. That is the useful backpressure signal. The consumer path is callback-free: rb_drain runs flat out.
 - Bounded by design. capacity, slots, slot_size are frozen at init. You cannot accidentally grow the ring under load.
+- Optional Linux/Android notification. With `RB_ENABLE_NOTIFY=1`, the core `rb.h` API provides futex sleeping for idle consumers and an `eventfd` for poll/epoll/libuv/libev-style event loops. Notification is a wake-up hint, not part of the ownership protocol.
 
 ## Weaknesses
 
@@ -48,7 +49,7 @@ Being honest about what this is not:
 - Fixed-stride slots. Every slot is the same size. A 64-byte frame occupies a 2 KB slot. If your workload has a wide size distribution and memory is tight, you want size classes (multiple rings) or a real arena with a free list - this library is neither.
 - Strict FIFO release order. The consumer releases slots in the order it consumed them. Out-of-order release would require a free-list ring and is not implemented. For a straight pipeline this is a non-issue; for a reorder buffer it is a blocker.
 - Oversize handling is a policy, not magic. Under the default TRUNCATE policy, a payload larger than slot_size - 4 is written up to capacity and flagged TRUNCATED. The library never silently forwards a partial object as complete, but the caller still has to decide what to do with the flag.
-- Not a scheduler. The library never spawns a thread and never owns an event loop. rb_thread.* and rb_notify.* are optional helpers; they exist so you don't have to write them, not because the library wants to be a runtime.
+- Not a scheduler. The library never spawns a thread and never owns an event loop. `rb_thread.*` is an optional convenience helper; notification is **not** a separate `rb_notify.*` implementation anymore — the notification API lives in `rb.h` and its implementation is in `rb.c`.
 - No dynamic resize. Capacity cannot change after init. limit (the logical max) can change while the ring is empty; nothing else.
 - Cache-sensitive. Once capacity * stride exceeds L2, throughput drops ~40%. On a laptop that's roughly an 8 MB working set. Budget accordingly if you raise capacity with large slots.
 
@@ -88,4 +89,3 @@ sequenceDiagram
     R-->>P: on_full (once when count == limit)
     R-->>P: on_low_d (once when count drops below d%)
 ```
-
