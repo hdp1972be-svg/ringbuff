@@ -31,6 +31,9 @@
 #ifndef RB_RUN_SECONDS
 #  define RB_RUN_SECONDS 10u
 #endif
+#ifndef RB_BENCH_MSG_SIZE
+#  define RB_BENCH_MSG_SIZE 256u
+#endif
 
 static inline size_t ipc_scratch_offset(void) {
     size_t core = rb_size(RB_CAPACITY);

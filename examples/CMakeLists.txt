@@ -20,6 +20,13 @@ target_link_libraries(notify_threaded PRIVATE rb_thread)
 add_executable(backpressure_inproc backpressure_inproc.c)
 target_link_libraries(backpressure_inproc PRIVATE rb_thread)
 
+# Two-process throughput benchmark (no artificial pacing, shared shm)
+add_executable(ipc_bench_writer ipc_bench_writer.c)
+target_link_libraries(ipc_bench_writer PRIVATE rb rt)
+
+add_executable(ipc_bench_reader ipc_bench_reader.c)
+target_link_libraries(ipc_bench_reader PRIVATE rb rt)
+
 
 # GPU shared scratchpad demo (only if CUDA is available)
 find_package(CUDAToolkit QUIET)
@@ -33,7 +40,8 @@ endif()
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     foreach(t ipc_writer ipc_reader ipc_burst_writer ipc_slow_reader
-                notify_threaded backpressure_inproc)
+                notify_threaded backpressure_inproc
+                ipc_bench_writer ipc_bench_reader)
         target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
 endif()
