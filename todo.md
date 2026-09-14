@@ -48,9 +48,9 @@ cmake --build build -j
 
 ---
 
-1. Graceful shutdown — the biggest gap
+1. Graceful shutdown — DONE (application-level protocol)
 
-PENDING — shutdown protocol has not yet been changed. The producer/consumer termination handshake still needs to be designed and applied consistently across the examples.
+The IPC writer now runs for a configured duration (RB_RUN_SECONDS, default 10 s) instead of a fixed message count and responds to SIGINT by leaving its publish loop cleanly. The reader likewise handles SIGINT and exits through its normal cleanup path. This keeps shutdown out of the hot path and makes sustained runs representative of the surrounding system load. A higher-level application that needs an explicit producer/consumer EOF state can layer that state beside the ring; the ring itself deliberately does not infer producer lifetime from queue state.
 
 2. ABA on the futex word — DONE (bounded backstop)
 
@@ -62,7 +62,7 @@ rb_wait() now retries futex waits interrupted by EINTR and preserves the caller'
 
 4. Cross-process notification — PARTIAL
 
-RB_FUTEX_SHARED is now exposed by CMake and switches rb_wait/rb_futex_wake between FUTEX_WAIT(_PRIVATE) and FUTEX_WAKE(_PRIVATE). IPC validation and a dedicated cross-process regression test are still pending. eventfd remains process-local unless its descriptor is explicitly shared by the application.
+RB_FUTEX_SHARED is now exposed by CMake and switches rb_wait/rb_futex_wake between FUTEX_WAIT(_PRIVATE) and FUTEX_WAKE(_PRIVATE). The existing IPC reader now exercises rb_wait() against a MAP_SHARED ring when built with RB_FUTEX_SHARED=ON. The sustained cross-process workflow is supplied separately as .github/workflows/ipc-sustained.yml and records writer/reader logs as an artifact; it still needs to be uploaded and run in GitHub Actions. eventfd remains process-local unless its descriptor is explicitly shared by the application.
 
 5. False sharing at the ring/scratchpad boundary — DONE (documented)
 
@@ -96,9 +96,9 @@ fuzz/rb_state.c is integrated as an optional rb_fuzz_state executable through RB
 
 The harness exercises acquire/publish/abort, consume/release, drain callbacks, and state queries while maintaining a model count and checking it against rb_count(). It won't find race conditions — that's what TSan does. The smoke test is defined but has not been executed in this environment.
 
-10. Signal handling during the wait
+10. Signal handling during the wait — DONE
 
-PENDING — no regression test has been added yet.
+Added tests/test_rb_signal.c and the rb_signal CTest. The regression targets a real futex waiter with SIGUSR1 via pthread_kill(), verifies the signal is observed while the waiter remains blocked, then publishes data and verifies rb_wait() resumes normally instead of leaking EINTR. This complements the existing EINTR retry logic.
 
 ---
 
