@@ -41,6 +41,7 @@ int main(void) {
 
     printf("reader: pid=%d attached to %s\n", (int)getpid(), RB_SHM_NAME);
     printf("reader: waiting for data, Ctrl-C to stop\n");
+    fflush(stdout);
 
     uint64_t received = 0;
     uint64_t last_seq = 0;
@@ -55,8 +56,6 @@ int main(void) {
 
         rb_err_t e = rb_consume(rb, &idx, &obj, &len, &trunc);
         if (e == RB_ERR_EMPTY) {
-            /* The ring is in MAP_SHARED memory. With RB_FUTEX_SHARED=1,
-               rb_wait() uses a process-shared futex on the shared head. */
             uint32_t expected = rb_notify_value(rb);
             int w = rb_wait(rb, expected, 1000);
             waits++;
@@ -74,18 +73,14 @@ int main(void) {
         if (trunc) {
             truncations++;
         } else if (len > 0) {
-            /* The payload starts with "msg #N ". Parse N and check it
-               matches the expected sequence. This verifies no items
-               were lost, duplicated, or reordered across processes. */
-            uint64_t n = 0;
-            if (sscanf((const char *)obj, "msg #%llu", (unsigned long long *)&n) == 1) {
+            unsigned long long n;
+            if (sscanf((const char *)obj, "msg #%llu", &n) == 1) {
                 if (last_seq != 0 && n != last_seq + 1) {
                     gaps++;
                     if (gaps <= 5) {
                         fprintf(stderr,
                                 "reader: sequence gap, expected %llu got %llu\n",
-                                (unsigned long long)(last_seq + 1),
-                                (unsigned long long)n);
+                                (unsigned long long)(last_seq + 1), n);
                     }
                 }
                 last_seq = n;
@@ -95,12 +90,13 @@ int main(void) {
         rb_release(rb, idx);
         received++;
 
-        if ((received % 10000u) == 0u) {
+        if ((received % 100000u) == 0u) {
             printf("reader: %llu received, last_seq=%llu gaps=%llu waits=%llu\n",
                    (unsigned long long)received,
                    (unsigned long long)last_seq,
                    (unsigned long long)gaps,
                    (unsigned long long)waits);
+            fflush(stdout);
         }
     }
 
@@ -109,6 +105,7 @@ int main(void) {
            (unsigned long long)gaps,
            (unsigned long long)truncations,
            (unsigned long long)waits);
+    fflush(stdout);
 
     munmap(base, sz);
     return 0;
