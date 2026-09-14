@@ -9,12 +9,17 @@ target_link_libraries(test_rb_threaded PRIVATE rb_thread)
 add_executable(test_rb_backpressure test_rb_backpressure.c)
 target_link_libraries(test_rb_backpressure PRIVATE rb_thread)
 
+add_executable(test_rb_signal test_rb_signal.c)
+target_link_libraries(test_rb_signal PRIVATE rb Threads::Threads)
+
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(test_rb            PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(test_rb_threaded   PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(test_rb_backpressure PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(test_rb_signal     PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 add_test(NAME rb_all          COMMAND test_rb)
 add_test(NAME rb_threaded     COMMAND test_rb_threaded)
 add_test(NAME rb_backpressure COMMAND test_rb_backpressure)
+add_test(NAME rb_signal       COMMAND test_rb_signal)
