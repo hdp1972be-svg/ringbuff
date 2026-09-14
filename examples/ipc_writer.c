@@ -23,11 +23,16 @@ static void sleep_us(long us) {
     nanosleep(&ts, NULL);
 }
 
+static double elapsed_seconds(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - start->tv_sec) +
+           (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
+
 int main(void) {
     signal(SIGINT, on_sigint);
 
-    /* Create the region. O_EXCL protects against a stale shm segment
-       from a previous run; the user must `rm /dev/shm/rb_ipc_demo`. */
     int fd = shm_open(RB_SHM_NAME, O_CREAT | O_RDWR | O_EXCL, 0600);
     if (fd < 0) {
         if (errno == EEXIST) {
@@ -77,13 +82,16 @@ int main(void) {
 
     printf("writer: pid=%d shm=%s size=%zu B\n",
            (int)getpid(), RB_SHM_NAME, sz);
-    printf("writer: publishing %u messages, Ctrl-C to stop early\n",
-           RB_TOTAL_MESSAGES);
+    printf("writer: running for %u seconds, Ctrl-C to stop early\n",
+           RB_RUN_SECONDS);
+    fflush(stdout);
 
     uint64_t seq = 0;
     uint64_t full_waits = 0;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    while (!g_stop && seq < RB_TOTAL_MESSAGES) {
+    while (!g_stop && elapsed_seconds(&start) < (double)RB_RUN_SECONDS) {
         char msg[192];
         int len = snprintf(msg, sizeof msg,
                            "msg #%llu from pid %d at %lld",
@@ -96,8 +104,6 @@ int main(void) {
         void *w;
         e = rb_acquire(rb, (uint32_t)len, &idx, &w, &cap);
         if (e == RB_ERR_FULL) {
-            /* Reader is behind. Back off, retry. This is the ring's
-               backpressure signal in action. */
             full_waits++;
             sleep_us(200);
             continue;
@@ -111,23 +117,25 @@ int main(void) {
         rb_publish(rb, idx, (uint32_t)len);
         seq++;
 
-        if ((seq % 10000u) == 0u)
+        if ((seq % 100000u) == 0u) {
             printf("writer: %llu published (full_waits=%llu)\n",
                    (unsigned long long)seq,
                    (unsigned long long)full_waits);
+            fflush(stdout);
+        }
 
-        /* Small delay so the demo prints interesting numbers.
-           Remove for a pure throughput test. */
         sleep_us(20);
     }
 
-    printf("writer: done. %llu published, %llu backpressure waits\n",
+    double seconds = elapsed_seconds(&start);
+    printf("writer: done. %llu published, %llu backpressure waits, %.3f s, %.0f msg/s\n",
            (unsigned long long)seq,
-           (unsigned long long)full_waits);
+           (unsigned long long)full_waits,
+           seconds,
+           seconds > 0.0 ? (double)seq / seconds : 0.0);
+    fflush(stdout);
 
     rb_deinit(rb);
     munmap(base, sz);
-    /* Deliberately NOT calling shm_unlink here: the reader may still
-       be attached. Cleanup is documented in examples/README.md. */
     return 0;
 }
