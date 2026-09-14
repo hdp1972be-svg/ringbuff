@@ -16,8 +16,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Only provide defaults. If CMake already defined these on the command
- * line, the CMake values win and no redefinition warning is emitted. */
 #ifndef RB_SHM_NAME
 #  define RB_SHM_NAME "/rb_ipc_demo"
 #endif
@@ -30,8 +28,8 @@
 #ifndef RB_SLOT_SIZE
 #  define RB_SLOT_SIZE 2048u
 #endif
-#ifndef RB_TOTAL_MESSAGES
-#  define RB_TOTAL_MESSAGES 100000u
+#ifndef RB_RUN_SECONDS
+#  define RB_RUN_SECONDS 10u
 #endif
 
 static inline size_t ipc_scratch_offset(void) {
