@@ -16,12 +16,6 @@
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 
-static void sleep_us(long us) {
-    struct timespec ts = { .tv_sec = us / 1000000,
-                           .tv_nsec = (us % 1000000) * 1000L };
-    nanosleep(&ts, NULL);
-}
-
 int main(void) {
     signal(SIGINT, on_sigint);
 
@@ -46,13 +40,13 @@ int main(void) {
     rb_t *rb = ipc_ring(base);
 
     printf("reader: pid=%d attached to %s\n", (int)getpid(), RB_SHM_NAME);
-    printf("reader: draining, Ctrl-C to stop\n");
+    printf("reader: waiting for data, Ctrl-C to stop\n");
 
     uint64_t received = 0;
     uint64_t last_seq = 0;
     uint64_t gaps = 0;
     uint64_t truncations = 0;
-    uint64_t idle_spins = 0;
+    uint64_t waits = 0;
 
     while (!g_stop) {
         uint32_t idx, len;
@@ -61,11 +55,15 @@ int main(void) {
 
         rb_err_t e = rb_consume(rb, &idx, &obj, &len, &trunc);
         if (e == RB_ERR_EMPTY) {
-            /* Poll. A production version would use rb_wait() on the
-               ring's head counter (futex, cross-process because the
-               mapping is MAP_SHARED), or an eventfd via rb_notify_fd(). */
-            idle_spins++;
-            sleep_us(50);
+            /* The ring is in MAP_SHARED memory. With RB_FUTEX_SHARED=1,
+               rb_wait() uses a process-shared futex on the shared head. */
+            uint32_t expected = rb_notify_value(rb);
+            int w = rb_wait(rb, expected, 1000);
+            waits++;
+            if (w != 0 && w != -ETIMEDOUT && w != -EINTR) {
+                fprintf(stderr, "reader: rb_wait error %d\n", w);
+                break;
+            }
             continue;
         }
         if (e != RB_OK) {
@@ -98,19 +96,19 @@ int main(void) {
         received++;
 
         if ((received % 10000u) == 0u) {
-            printf("reader: %llu received, last_seq=%llu gaps=%llu\n",
+            printf("reader: %llu received, last_seq=%llu gaps=%llu waits=%llu\n",
                    (unsigned long long)received,
                    (unsigned long long)last_seq,
-                   (unsigned long long)gaps);
+                   (unsigned long long)gaps,
+                   (unsigned long long)waits);
         }
     }
 
-    printf("reader: stopping. received=%llu gaps=%llu truncations=%llu "
-           "idle_spins=%llu\n",
+    printf("reader: stopping. received=%llu gaps=%llu truncations=%llu waits=%llu\n",
            (unsigned long long)received,
            (unsigned long long)gaps,
            (unsigned long long)truncations,
-           (unsigned long long)idle_spins);
+           (unsigned long long)waits);
 
     munmap(base, sz);
     return 0;
