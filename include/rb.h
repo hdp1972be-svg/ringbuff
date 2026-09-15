@@ -23,7 +23,11 @@ typedef enum {
 } rb_err_t;
 #define RB_SLOT_TRUNCATED 0x80000000u
 #define RB_SLOT_LEN_MASK 0x7FFFFFFFu
+#if RB_PER_SLOT_LAP
+#define RB_SLOT_HDR_SIZE 8u
+#else
 #define RB_SLOT_HDR_SIZE 4u
+#endif
 typedef enum { RB_OVERSIZE_TRUNCATE = 0, RB_OVERSIZE_DROP = 1 } rb_oversize_policy_t;
 #if RB_USE_POINTERS
 typedef void *rb_entry_t;

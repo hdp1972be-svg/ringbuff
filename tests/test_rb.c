@@ -169,16 +169,16 @@ static void test_full_and_empty(void) {
 }
 
 static void test_truncate(void) {
-    fixture_t f = make_fixture(4, 4, 32, NULL); /* payload cap = 28 */
+    fixture_t f = make_fixture(4, 4, 32, NULL); /* payload cap = 32 - RB_SLOT_HDR_SIZE */
     uint32_t idx, cap; void *w;
     CHECK(rb_acquire(f.rb, 100, &idx, &w, &cap) == RB_OK, "acquire oversize ok");
-    CHECK(cap == 28, "cap is slot_size - 4");
+    CHECK(cap == 32u - RB_SLOT_HDR_SIZE, "cap is slot_size - RB_SLOT_HDR_SIZE");
     memset(w, 0xAA, cap);
     CHECK(rb_publish(f.rb, idx, cap) == RB_OK, "publish truncated");
 
     uint32_t cidx, clen; const void *obj; bool trunc;
     CHECK(rb_consume(f.rb, &cidx, &obj, &clen, &trunc) == RB_OK, "consume");
-    CHECK(clen == 28, "len is cap");
+    CHECK(clen == 32u - RB_SLOT_HDR_SIZE, "len is cap");
     CHECK(trunc,      "TRUNCATED flag set");
     rb_release(f.rb, cidx);
 

@@ -50,6 +50,10 @@
 #define RB_USE_ATOMICS        1
 #endif
 
+#ifndef RB_PER_SLOT_LAP
+#define RB_PER_SLOT_LAP       0
+#endif
+
 /* 1 = compile stats (watermarks, counters) into the control block. */
 #ifndef RB_ENABLE_STATS
 #define RB_ENABLE_STATS       1

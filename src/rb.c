@@ -28,15 +28,25 @@ static int rb_futex_wake(uint32_t *word) {
 }
 #endif
 struct rb_s {
+#if RB_PER_SLOT_LAP
+    RB_ALIGNAS(RB_CACHE_LINE) rb_atomic_u32 notify_seq;
+    uint32_t cached_consumer_pos, pending_slot, pending_wanted;
+#else
     RB_ALIGNAS(RB_CACHE_LINE) rb_atomic_u32 head;
     uint32_t cached_tail, pending_slot, pending_wanted;
+#endif
     rb_atomic_u32 full_latch;
 #if RB_ENABLE_NOTIFY && defined(__linux__)
     rb_atomic_u32 notify_waiters;
     int notify_fd;
 #endif
+    #if RB_PER_SLOT_LAP
+    RB_ALIGNAS(RB_CACHE_LINE) rb_atomic_u32 consumer_pos;
+    uint32_t cached_notify_seq, consumer_active, consumer_slot, low_d_latch, low_e_latch;
+#else
     RB_ALIGNAS(RB_CACHE_LINE) rb_atomic_u32 tail;
     uint32_t cached_head, consumer_active, consumer_slot, low_d_latch, low_e_latch;
+#endif
     uint32_t capacity, limit, mask, slots, slots_mask, slot_size, slot_stride, low_d, low_e;
     rb_oversize_policy_t oversize_policy;
     size_t producer_stack_size, consumer_stack_size;
@@ -182,14 +192,27 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     rb->scratch_off = (size_t)((uintptr_t)scratch - (uintptr_t)rb);
     rb->scratch_size = scratch_size;
     rb->cb = cfg->cb;
+    #if RB_PER_SLOT_LAP
+    RB_ATOMIC_STORE_REL(&rb->notify_seq, 0u);
+    RB_ATOMIC_STORE_REL(&rb->consumer_pos, 0u);
+    rb->cached_consumer_pos = rb->cached_notify_seq = 0u;
+#else
     RB_ATOMIC_STORE_REL(&rb->head, 0u);
     RB_ATOMIC_STORE_REL(&rb->tail, 0u);
     rb->cached_tail = rb->cached_head = 0u;
+#endif
     rb->pending_slot = RB_NO_PENDING;
     rb->pending_wanted = 0u;
     rb->consumer_active = rb->consumer_slot = 0u;
     RB_ATOMIC_STORE_RLX(&rb->full_latch, 0u);
     rb->low_d_latch = rb->low_e_latch = 0u;
+#if RB_PER_SLOT_LAP
+    {
+        uint32_t si = 0u;
+        for (; si < slots; si++)
+            RB_ATOMIC_STORE_RLX((rb_atomic_u32 *)(rb_scratch(rb) + (size_t)si * stride), si);
+    }
+#endif
 #if RB_ENABLE_NOTIFY && defined(__linux__)
     RB_ATOMIC_STORE_RLX(&rb->notify_waiters, 0u);
     rb->notify_fd = -1;
@@ -219,12 +242,21 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
         return RB_ERR_NOT_INIT;
     if (rb->pending_slot != RB_NO_PENDING)
         return RB_ERR_INVAL;
+    #if RB_PER_SLOT_LAP
+    uint32_t pos = RB_ATOMIC_LOAD_RLX(&rb->notify_seq), tail = rb->cached_consumer_pos, count = pos - tail;
+    if (count >= rb->limit) {
+        tail = RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
+        rb->cached_consumer_pos = tail;
+        count = pos - tail;
+        if (count >= rb->limit) {
+#else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail, count = head - tail;
     if (count >= rb->limit) {
         tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
         rb->cached_tail = tail;
         count = head - tail;
         if (count >= rb->limit) {
+#endif
 #if RB_ENABLE_STATS
             rb->stats.full_attempts++;
 #endif
@@ -234,7 +266,11 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
     uint32_t cap = rb->slot_size - RB_SLOT_HDR_SIZE;
     if (wanted_len && wanted_len > cap && rb->oversize_policy == RB_OVERSIZE_DROP)
         return RB_ERR_OVERSIZE;
+    #if RB_PER_SLOT_LAP
+    uint32_t slot_index = slot_index_for(rb, pos);
+#else
     uint32_t slot_index = slot_index_for(rb, head);
+#endif
     rb->pending_slot = slot_index;
     rb->pending_wanted = wanted_len;
     if (out_slot_index)
@@ -261,7 +297,12 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     if (truncated)
         hdr |= RB_SLOT_TRUNCATED;
     uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
-    memcpy(slot, &hdr, sizeof hdr);
+    memcpy(slot + (RB_SLOT_HDR_SIZE - sizeof hdr), &hdr, sizeof hdr);
+#if RB_PER_SLOT_LAP
+    uint32_t pos = RB_ATOMIC_LOAD_RLX(&rb->notify_seq);
+    RB_ATOMIC_STORE_REL((rb_atomic_u32 *)slot, pos + 1u);
+    RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
+#else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
 #if RB_USE_POINTERS
     rb->entries[head & rb->mask] = (rb_entry_t)slot;
@@ -269,9 +310,14 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
     RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
+#endif
 #if RB_ENABLE_NOTIFY && defined(__linux__)
     if (RB_ATOMIC_LOAD_RLX(&rb->notify_waiters) != 0u)
+#if RB_PER_SLOT_LAP
+        (void)rb_futex_wake((uint32_t *)&rb->notify_seq);
+#else
         (void)rb_futex_wake((uint32_t *)&rb->head);
+#endif
     if (rb->notify_fd >= 0) {
         uint64_t one = 1u;
         ssize_t _w = write(rb->notify_fd, &one, sizeof one);
@@ -280,9 +326,15 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #endif
     rb->pending_slot = RB_NO_PENDING;
     rb->pending_wanted = 0u;
+#if RB_PER_SLOT_LAP
+    uint32_t tail = RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
+    rb->cached_consumer_pos = tail;
+    uint32_t count = (pos + 1u) - tail;
+#else
     uint32_t tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
     rb->cached_tail = tail;
     uint32_t count = (head + 1u) - tail;
+#endif
 #if RB_ENABLE_STATS
     rb->stats.published++;
     if (count > rb->stats.high_water)
@@ -320,6 +372,25 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
         return RB_ERR_NOT_INIT;
     if (rb->consumer_active)
         return RB_ERR_INVAL;
+    #if RB_PER_SLOT_LAP
+    uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->consumer_pos), head = rb->cached_notify_seq;
+    if (tail == head) {
+        head = RB_ATOMIC_LOAD_ACQ(&rb->notify_seq);
+        rb->cached_notify_seq = head;
+        if (tail == head)
+            return RB_ERR_EMPTY;
+    }
+    uint32_t slot_index = slot_index_for(rb, tail);
+    if (slot_index >= rb->slots)
+        return RB_ERR_INVAL;
+    const uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+    if (RB_ATOMIC_LOAD_ACQ((rb_atomic_u32 *)slot) != tail + 1u) {
+        head = RB_ATOMIC_LOAD_ACQ(&rb->notify_seq);
+        rb->cached_notify_seq = head;
+        if (head == tail)
+            return RB_ERR_EMPTY;
+    }
+#else
     uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail), head = rb->cached_head;
     if (tail == head) {
         head = RB_ATOMIC_LOAD_ACQ(&rb->head);
@@ -342,8 +413,9 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     if (slot_index >= rb->slots)
         return RB_ERR_INVAL;
     const uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+#endif
     uint32_t hdr;
-    memcpy(&hdr, slot, sizeof hdr);
+    memcpy(&hdr, slot + (RB_SLOT_HDR_SIZE - sizeof hdr), sizeof hdr);
     uint32_t len = hdr & RB_SLOT_LEN_MASK;
     bool truncated = (hdr & RB_SLOT_TRUNCATED) != 0u;
     rb->consumer_active = 1u;
@@ -363,10 +435,19 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
         return RB_ERR_NOT_INIT;
     if (!rb->consumer_active || slot_index != rb->consumer_slot)
         return RB_ERR_INVAL;
+    #if RB_PER_SLOT_LAP
+    uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->consumer_pos);
+    uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+    RB_ATOMIC_STORE_REL((rb_atomic_u32 *)slot, tail + rb->slots);
+    RB_ATOMIC_STORE_REL(&rb->consumer_pos, tail + 1u);
+    rb->consumer_active = 0u;
+    uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
+#else
     uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail);
     RB_ATOMIC_STORE_REL(&rb->tail, tail + 1u);
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_head, new_count = head - (tail + 1u), old_count = new_count + 1u;
+#endif
 #if RB_ENABLE_STATS
     rb->stats.consumed++;
 #endif
@@ -447,7 +528,11 @@ uint32_t rb_flush(rb_t *rb, rb_flush_fn fn, void *user) {
 uint32_t rb_count(const rb_t *rb) {
     if (!rb || !rb->scratch_size)
         return 0u;
+    #if RB_PER_SLOT_LAP
+    return RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) - RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
+#else
     return RB_ATOMIC_LOAD_ACQ(&rb->head) - RB_ATOMIC_LOAD_ACQ(&rb->tail);
+#endif
 }
 uint32_t rb_capacity(const rb_t *rb) {
     return rb ? rb->capacity : 0u;
@@ -532,7 +617,11 @@ rb_err_t rb_set_consumer_stack(rb_t *rb, size_t bytes) {
 }
 #if RB_ENABLE_NOTIFY && defined(__linux__)
 uint32_t rb_notify_value(const rb_t *rb) {
+#if RB_PER_SLOT_LAP
+    return rb ? RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) : 0u;
+#else
     return rb ? RB_ATOMIC_LOAD_ACQ(&rb->head) : 0u;
+#endif
 }
 static uint64_t rb_now_ms(void) {
     struct timespec now;
@@ -564,7 +653,11 @@ int rb_wait(rb_t *rb, uint32_t expected, int timeout_ms) {
             break;
         }
         struct timespec ts = {(time_t)(slice / 1000u), (long)((slice % 1000u) * 1000000u)};
+        #if RB_PER_SLOT_LAP
+        int rc = rb_futex_wait((uint32_t *)&rb->notify_seq, expected, &ts);
+#else
         int rc = rb_futex_wait((uint32_t *)&rb->head, expected, &ts);
+#endif
         int saved = errno;
         if (rc == 0 || saved == EAGAIN)
             break;
