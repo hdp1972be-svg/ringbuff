@@ -133,21 +133,22 @@ consults a callback.
 These are set via `-D` flags or CMake options. They affect struct layout,
 entry type, or which code paths exist.
 
-| Macro                     | Default | Meaning                                     |
-|---------------------------|---------|---------------------------------------------|
-| `RB_SLOT_SIZE`            | `2048`  | Bytes per slot, including 4-byte header     |
-| `RB_NUM_SLOTS`            | `64`    | Default scratchpad slot count               |
-| `RB_CAPACITY`             | `64`    | Default ring capacity (power of two)        |
-| `RB_CACHE_LINE`           | `64`    | Cache-line size for padding/alignment       |
-| `RB_USE_POINTERS`         | `0`     | 1: entries are `void*`, 0: `uint32_t`       |
-| `RB_SLOT_CACHELINE_PAD`   | `0`     | 1: pad slot stride to a cache line          |
-| `RB_SINGLE_THREADED`      | `0`     | 1: no atomics, no barriers                  |
-| `RB_USE_ATOMICS`          | `1`     | 1: C11 `<stdatomic.h>`, 0: porting barriers |
-| `RB_ENABLE_STATS`         | `1`     | 1: compile in counters and watermarks       |
-| `RB_ENABLE_THREAD_HELPERS`| `1`     | 1: build pthread spawn/join helper          |
-| `RB_ENABLE_NOTIFY`        | `0`     | 1: build eventfd/pipe wake-up helpers       |
-| `RB_DEFAULT_LOW_D`        | `25`    | Default low_d percentage                    |
-| `RB_DEFAULT_LOW_E`        | `10`    | Default low_e percentage                    |
+| Macro                       | Default  | Meaning                                                        |
+|---------------------------|--------|--------------------------------------------------------------|
+| `RB_SLOT_SIZE`              | `2048`   | Bytes per slot, incl. header (4 B; 8 B with RB_PER_SLOT_LAP=1) |
+| `RB_NUM_SLOTS`              | `64`     | Default scratchpad slot count                                  |
+| `RB_CAPACITY`               | `64`     | Default ring capacity (power of two)                           |
+| `RB_CACHE_LINE`             | `64`     | Cache-line size for padding/alignment                          |
+| `RB_USE_POINTERS`           | `0`      | 1: entries are `void*`, 0: `uint32_t`                          |
+| `RB_SLOT_CACHELINE_PAD`     | `0`      | 1: pad slot stride to a cache line                             |
+| `RB_SINGLE_THREADED`        | `0`      | 1: no atomics, no barriers                                     |
+| `RB_USE_ATOMICS`            | `1`      | 1: C11 `<stdatomic.h>`, 0: porting barriers                    |
+| `RB_PER_SLOT_LAP`           | `0`      | 1: per-slot lap mode (8-byte slot header)                      |
+| `RB_ENABLE_STATS`           | `1`      | 1: compile in counters and watermarks                          |
+| `RB_ENABLE_THREAD_HELPERS`  | `1`      | 1: build pthread spawn/join helper                             |
+| `RB_ENABLE_NOTIFY`          | `0`      | 1: build eventfd/pipe wake-up helpers                          |
+| `RB_DEFAULT_LOW_D`          | `25`     | Default low_d percentage                                       |
+| `RB_DEFAULT_LOW_E`          | `10`     | Default low_e percentage                                       |
 
 `RB_SINGLE_THREADED=1` forces `RB_USE_ATOMICS=0` and makes the ring
 compile down to a plain circular FIFO with a mask. No barriers, no atomic

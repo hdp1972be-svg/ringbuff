@@ -169,12 +169,14 @@ typedef bool (*rb_flush_fn)(void *writable, uint32_t cap,
 ```c
 #define RB_SLOT_TRUNCATED 0x80000000u
 #define RB_SLOT_LEN_MASK  0x7FFFFFFFu
-#define RB_SLOT_HDR_SIZE  4u
+#define RB_SLOT_HDR_SIZE  4u   /* 8u when RB_PER_SLOT_LAP = 1 */
 ```
 
-Every slot begins with a 4-byte header. Bits 0–30 hold the payload
-length; bit 31 is the `TRUNCATED` flag. Effective payload capacity per
-slot is `slot_size - RB_SLOT_HDR_SIZE`.
+Every slot begins with a header: 4 bytes in Mode 0 (default), 8 bytes
+in Mode 1 (`RB_PER_SLOT_LAP=1`). Bits 0–30 hold the payload length;
+bit 31 is the `TRUNCATED` flag. In Mode 1 the header also carries the
+per-slot sequence number (see [TECHNICAL.md](TECHNICAL.md#two-execution-modes)).
+Effective payload capacity per slot is `slot_size - RB_SLOT_HDR_SIZE`.
 
 ### Compile-time configuration
 
@@ -191,9 +193,10 @@ The ones that affect the public API's behaviour:
 | `RB_SLOT_CACHELINE_PAD` | `0` | 1 = pad slot stride to cache line |
 | `RB_SINGLE_THREADED` | `0` | 1 = no atomics, no barriers |
 | `RB_USE_ATOMICS` | `1` | 1 = C11 `<stdatomic.h>` |
+| `RB_PER_SLOT_LAP` | `0` | 1 = Vyukov per-slot-lap mode (8-byte slot header) |
 | `RB_ENABLE_STATS` | `1` | 1 = compile in counters |
 | `RB_ENABLE_THREAD_HELPERS` | `1` | 1 = build `rb_thread.c` |
-| `RB_ENABLE_NOTIFY` | `0` | 1 = build `rb_notify.c` |
+| `RB_ENABLE_NOTIFY` | `0` | 1 = futex + eventfd wake-up helpers in `rb.c` |
 | `RB_DEFAULT_LOW_D` | `25` | Default low_d percentage |
 | `RB_DEFAULT_LOW_E` | `10` | Default low_e percentage |
 

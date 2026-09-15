@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `RB_PER_SLOT_LAP=1`: Vyukov per-slot-lap mode with 8-byte slot header carrying per-slot sequence stamping (commit `b99fe52`)
+- `RB_PREFETCH_R` / `RB_PREFETCH_W` compile-time prefetch hints in acquire and consume paths (commit `30d42bc`)
+- Dual-build (`RB_PER_SLOT_LAP=0/1`) test coverage
+
 ## [1.0.0] - 2026-09-11
 
 Initial release.
