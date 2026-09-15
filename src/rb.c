@@ -268,12 +268,11 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
-    uint32_t tail_before = RB_ATOMIC_LOAD_ACQ(&rb->tail), old_count = head - tail_before;
     RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
 #if RB_ENABLE_NOTIFY && defined(__linux__)
     if (RB_ATOMIC_LOAD_RLX(&rb->notify_waiters) != 0u)
         (void)rb_futex_wake((uint32_t *)&rb->head);
-    if (old_count == 0u && rb->notify_fd >= 0) {
+    if (rb->notify_fd >= 0) {
         uint64_t one = 1u;
         ssize_t _w = write(rb->notify_fd, &one, sizeof one);
         (void)_w;

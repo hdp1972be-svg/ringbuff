@@ -20,6 +20,18 @@ target_link_libraries(notify_threaded PRIVATE rb_thread)
 add_executable(backpressure_inproc backpressure_inproc.c)
 target_link_libraries(backpressure_inproc PRIVATE rb_thread)
 
+# Single-process backpressure benchmark (poll / futex / libuv)
+add_executable(backpressure_bench backpressure_bench.c)
+target_link_libraries(backpressure_bench PRIVATE rb_thread uv)
+
+# Raw memcpy bandwidth reference (no IPC, no rb; measures the copy ceiling)
+add_executable(ipc_bench_memcpy ipc_bench_memcpy.c)
+target_link_libraries(ipc_bench_memcpy PRIVATE rt)
+set_target_properties(ipc_bench_memcpy PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF)
+
 # Two-process throughput benchmark (no artificial pacing, shared shm)
 add_executable(ipc_bench_writer ipc_bench_writer.c)
 target_link_libraries(ipc_bench_writer PRIVATE rb rt)
@@ -40,8 +52,8 @@ endif()
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     foreach(t ipc_writer ipc_reader ipc_burst_writer ipc_slow_reader
-                notify_threaded backpressure_inproc
-                ipc_bench_writer ipc_bench_reader)
+                notify_threaded backpressure_inproc backpressure_bench
+                ipc_bench_writer ipc_bench_reader ipc_bench_memcpy)
         target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
 endif()

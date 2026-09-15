@@ -1,0 +1,77 @@
+name: IPC sustained notification
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'examples/**'
+      - '.github/workflows/ipc-sustained.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'examples/**'
+      - '.github/workflows/ipc-sustained.yml'
+  workflow_dispatch:
+
+jobs:
+  ipc-sustained:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build IPC examples with process-shared futex
+        run: |
+          cmake -S . -B build-ipc             -DCMAKE_BUILD_TYPE=Release             -DRB_BUILD_EXAMPLES=ON             -DRB_ENABLE_NOTIFY=ON             -DRB_FUTEX_SHARED=ON
+          cmake --build build-ipc --target ipc_writer ipc_reader -j2
+
+      - name: Run sustained IPC test
+        shell: bash
+        run: |
+          set -u
+          rm -f /dev/shm/rb_ipc_demo
+          ./build-ipc/examples/ipc_writer >writer.log 2>&1 &
+          writer=$!
+
+          for i in {1..100}; do
+            test -e /dev/shm/rb_ipc_demo && break
+            sleep 0.05
+          done
+          test -e /dev/shm/rb_ipc_demo
+
+          ./build-ipc/examples/ipc_reader >reader.log 2>reader.err &
+          reader=$!
+
+          writer_rc=0
+          wait "$writer" || writer_rc=$?
+
+          sleep 0.2
+          kill -INT "$reader" 2>/dev/null || true
+          reader_rc=0
+          wait "$reader" || reader_rc=$?
+
+          cat writer.log
+          cat reader.log
+          cat reader.err
+
+          test "$writer_rc" -eq 0
+          test "$reader_rc" -eq 0
+          grep -q 'done\.' writer.log
+          grep -q 'stopping\.' reader.log
+          grep -q 'gaps=0' reader.log
+          grep -q 'truncations=0' reader.log
+          grep -q 'waits=' reader.log
+
+          rm -f /dev/shm/rb_ipc_demo
+
+      - name: Upload IPC logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ringbuff-ipc-sustained-${{ github.run_number }}
+          path: |
+            writer.log
+            reader.log
+            reader.err
+          retention-days: 30

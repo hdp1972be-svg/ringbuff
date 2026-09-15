@@ -244,6 +244,148 @@ not all the same size.
 
 ---
 
+## Benchmark 4 — Process-to-process IPC
+
+**What it measures:** one producer and one consumer in two *separate
+processes* (not threads), connected through a single shared-memory
+ring, moving real bytes. This models the intended split between a
+socket reader process and a transform process.
+
+**Tool:** `examples/ipc_bench_writer.c` (producer) and
+`examples/ipc_bench_reader.c` (consumer), driven by
+`examples/run_ipc_bench.sh`. Ring: 64 slots × 2048 B, `capacity=64`
+(`/dev/shm` region `/rb_ipc_bench`, ~128 KB + header — inside L2).
+Both sides use `CLOCK_MONOTONIC` and stop cleanly on SIGINT. The
+reader reports a per-message end-to-end latency (writer timestamp →
+reader receipt), printed only for messages of 12 bytes or more.
+
+> **Build caveat.** Benchmarks 1–3 above are Release builds. The IPC
+> numbers below came from the plain default build (`build-errors`,
+> `CMAKE_BUILD_TYPE` unset, no optimization flags), so treat them as
+> conservative lower bounds.
+
+**Run:**
+
+```bash
+cmake -B build-errors -DRB_BUILD_EXAMPLES=ON
+cmake --build build-errors
+./examples/run_ipc_bench.sh -m 2
+```
+
+`-m` also runs the raw single-process `memcpy` reference tool
+(`ipc_bench_memcpy`) at the same sizes. Duration defaults to 3 s per
+size; override with `BENCH_SECONDS` or a positional argument.
+
+### IPC results (writer → reader, 0 gaps at every size)
+
+| Size | w_msg/s | w_MB/s | r_msg/s | r_MB/s | Gaps | Latency avg (ns) |
+|---|---|---|---|---|---|---|
+| 4 B | 4,627,018 | 18.51 | 4,624,003 | 18.52 | 0 | n/a |
+| 16 B | 3,565,374 | 57.05 | 3,564,566 | 57.09 | 0 | 4,165 |
+| 256 B | 3,685,176 | 943.40 | 3,684,434 | 943.74 | 0 | 4,201 |
+| 1024 B | 3,182,645 | 3,259.03 | 3,182,547 | 3,259.81 | 0 | 4,086 |
+| 2048 B | 2,890,799 | 5,920.36 | 2,889,589 | 5,929.50 | 0 | 3,269 |
+| 4096 B | 2,444,330 | 10,011.97 | 2,444,330 | 10,017.05 | 0 | 4,205 |
+
+Config as shipped: `RB_SHM_NAME` `/rb_ipc_bench`, `RB_CAPACITY` 64,
+`RB_SLOTS` 64, `RB_SLOT_SIZE` 2048. The 4 B latency is `n/a` by
+design — the reader only timestamps messages ≥ 12 bytes.
+
+### Raw `memcpy` reference (single process, warm buffers)
+
+| Size | c_msg/s | c_MB/s |
+|---|---|---|
+| 4 B | 24,647,243 | 98.59 |
+| 16 B | 24,631,372 | 394.10 |
+| 256 B | 24,131,317 | 6,177.62 |
+| 1024 B | 16,989,720 | 17,397.47 |
+| 2048 B | 14,902,146 | 30,519.59 |
+| 4096 B | 10,352,376 | 42,403.33 |
+
+### Interpretation
+
+- **IPC sustains 14–24% of the raw single copy** (r_MB/s ÷ c_MB/s).
+  The gap is the crossing itself: the producer writes a slot it does
+  not own and the consumer reads a slot the producer just wrote, so every
+  message forces cache-line handoff between the two processes' view of
+  the shared region. Per side you still pay only your own copy — the
+  raw tool's ~42 GB/s at 4096 B is the ceiling for a single
+  hot-buffer copy.
+- **~5.9–10 GB/s per side is far more than the intended use case
+  needs.** The shipped 2 KB slot size delivers ~5.9 GB/s per process
+  pair; even the 4 KB row (~10 GB/s per side) handles ~2.4 M
+  messages/s, several orders of magnitude above any single WebSocket
+  connection.
+- **Zero gaps at every size** — the consumer never missed a slot, even
+  at 4096 B running ~2.4 M msg/s with no backpressure. The ring's
+  capacity was never the constraint.
+- **Latency is ~3.3–4.2 µs and nearly flat from 16 B to 4096 B.**
+  The inter-process handoff dominates; the payload copy is a minor
+  term. At 4096 B, 4.2 µs per message end-to-end is ~1000x below a
+  typical network RTT.
+- **Run-to-run variance is in the 10–12% range.** A fresh 1 s
+  standalone run (`ipc_bench_memcpy -t 1 -s 4096`) measured 9,360,885
+  msg/s / 38,342 MB/s vs 42,403 MB/s in the sweep above, and the IPC
+  4096 B row came out at 8,965.71 MB/s on a 1 s run vs ~10,014 MB/s in
+  the sweep. Same machine, warm buffers — treat sub-10% deltas as
+  noise.
+
+## Benchmark 5 — Producer backpressure + consumer wake paths (threaded)
+
+**What it measures:** one producer and one consumer *thread* connected
+through a single ring under saturation. The producer full-spins
+(`rb_full`) until a slot frees, so the ring is artificially running at
+capacity — the numbers here are the *wake + rebuild* cost, not the raw
+copy cost. Payload is a fixed 512 B. This is the threaded counterpart
+to Benchmark 2 and exercises the consumer wake machinery
+(`rb_notify()` / eventfd) that the IPC benchmark never touches.
+
+**Tool:** `examples/backpressure_bench.c`. Ring: 64 slots × 1024 B,
+`capacity=64`. Three consumer wake modes, selected with `-m`:
+
+| Mode | Wake mechanism |
+|---|---|
+| `poll` | Busy-spin: consumer re-reads `rb->head` until non-empty. No syscalls. |
+| `futex` | `rb_wait()`/futex: with `RB_ENABLE_NOTIFY` the producer wakes the consumer on every publish via `rb_futex_wake`. |
+| `uv` | eventfd: the producer writes the eventfd from `rb_notify_fd()`; the consumer waits on it via `uv_poll_t` inside `uv_run`. libuv's epoll backend owns the wait. |
+
+Defaults are `-m poll`, `-t 5` seconds, `-s 512` bytes.
+
+**Run:**
+
+```bash
+cmake -B build_examples -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build_examples
+for m in poll futex uv; do
+  ./build_examples/examples/backpressure_bench -m "$m"
+done
+```
+
+### Results (5 s, 512 B, producer at capacity)
+
+| Mode | msg/s | MB/s | produced | consumed |
+|---|---|---|---|---|
+| poll | 139,145 | 71.24 | 695,758 | 695,757 |
+| futex | 93,656 | 47.95 | 468,302 | 468,302 |
+| uv | 101,984 | 52.22 | 511,424 | 511,424 |
+
+- **The ring never froze under saturation.** This benchmark was written
+  to reproduce a regression in which a producer skipped its eventfd
+  write until the ring was observed empty (a stale-read race): under
+  that code the `uv` consumer stalled at ~960 msg/s and then died,
+  leaving the ring stuck at `capacity` with `produced=4809,
+  consumed=4745`. With every publish now waking the consumer,
+  `produced == consumed` in all three modes.
+- **`uv` beats `futex` and trails the busy-spin by only ~1.4x.** The
+  epoll wake is cheaper than the futex syscall at this ring size, and
+  the producer stays busy enough to re-wake on every message.
+- **Run-to-run spread is in the 10–12% band** — `uv` logged
+  100–108 k msg/s across 5 s runs, and a 15 s run delivered 1,673,109
+  produced/consumed (~111 k msg/s). Same noise behaviour as Benchmark 4
+  on this machine.
+
+---
+
 ## Summary
 
 | Question | Answer |
@@ -281,6 +423,18 @@ cmake --build build-bench
 
 ./build-bench/bench/bench_rb
 ./build-bench/bench/bench_rb_random
+
+# Benchmark 4 — process-to-process IPC + raw memcpy reference
+cmake -B build-errors -DRB_BUILD_EXAMPLES=ON
+cmake --build build-errors
+./examples/run_ipc_bench.sh -m 2
+
+# Benchmark 5 — producer backpressure + consumer wake paths
+cmake -B build_examples -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build_examples
+for m in poll futex uv; do
+  ./build_examples/examples/backpressure_bench -m "$m"
+done
 ```
 
 Both benchmarks print a per-item checksum so the compiler cannot
