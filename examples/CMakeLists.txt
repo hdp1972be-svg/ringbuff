@@ -50,11 +50,20 @@ else()
     message(STATUS "gpu_shared skipped (no CUDA toolkit)")
 endif()
 
+# Zynq-7000 / Antminer S9 dual-ring offload (CPU <-> FPGA model)
+add_executable(zynq_cpu_host zynq_offload/cpu_host.c)
+target_include_directories(zynq_cpu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/zynq_offload)
+target_link_libraries(zynq_cpu_host PRIVATE rb rt)
+
+add_executable(zynq_fpga_stub zynq_offload/fpga_stub.c)
+target_include_directories(zynq_fpga_stub PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/zynq_offload)
+target_link_libraries(zynq_fpga_stub PRIVATE rb rt)
+
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     foreach(t ipc_writer ipc_reader ipc_burst_writer ipc_slow_reader
                 notify_threaded backpressure_inproc backpressure_bench
-                ipc_bench_writer ipc_bench_reader ipc_bench_memcpy)
+                ipc_bench_writer ipc_bench_reader ipc_bench_memcpy
+                zynq_cpu_host zynq_fpga_stub)
         target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
 endif()
-
