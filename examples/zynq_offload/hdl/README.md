@@ -3,89 +3,87 @@
 Parameterized Verilog for the FPGA side of the dual-ring offload on a
 Zynq-7010 class device (Antminer S9 control board).
 
-This is a **teaching design**: it shows BRAM sizing, doorbell addresses,
-and a tiny streaming hash. It is not a complete, timing-closed bitstream.
+Teaching design: BRAM sizing, **split completion doorbells**, streaming hash.
+
+## Why two PL→CPU signals?
+
+A single “doorbell out” is ambiguous. In a real dual-ring offload you need:
+
+| Signal | Meaning | CPU action |
+|--------|---------|------------|
+| **INGRESS_DONE** | “I have **read** slot *N* on ring A” | `rb_release(ring_A, N)` → free the slot |
+| **EGRESS_READY** | “I have **written** a result on ring B” | `rb_consume(ring_B)` → take the result |
+
+These can fire at different times (read finishes before write, or vice versa
+in a deeper pipeline). The IRQ line is the OR of both (when enabled).
 
 ## Compile-time parameters
 
 | Parameter | Default | Meaning |
 |-----------|---------|--------|
-| `SLOTS` | 16 | Number of slots per scratchpad |
-| `SLOT_BYTES` | 256 | Bytes per slot (incl. 4 B header) |
-| `AXIL_BASE` | `0x43C00000` | Informational AXI-lite base (match Vivado) |
-| `USE_BRAM` | 1 | 1 = Block RAM, 0 = regs (sim only) |
-| `USE_IRQ` | 1 | Drive `irq_out` when egress doorbell is set |
-| `USE_HASH` | 1 | 1 = FNV-style hash, 0 = skip to store |
+| `SLOTS` | 16 | Slots per scratchpad |
+| `SLOT_BYTES` | 256 | Bytes per slot |
+| `AXIL_BASE` | `0x43C00000` | Informational AXI-lite base |
+| `USE_BRAM` | 1 | Block RAM vs regs (sim) |
+| `USE_IRQ` | 1 | `irq_out = (ingress_done \| egress_ready) & irq_en` |
+| `USE_HASH` | 1 | FNV hash vs store-only |
 
-### BRAM budget on XC7Z010
+### BRAM budget (XC7Z010 ~240 Kb)
 
-```
-bytes_per_scratchpad = SLOTS * SLOT_BYTES
-total_scratch        = 2 * bytes_per_scratchpad
-```
-
-Defaults: `16 * 256 = 4 KiB` each → **8 KiB** total ≈ a couple of 36 Kb
-BRAMs. The Z-7010 has on the order of **~240 Kb** Block RAM; leave headroom
-for AXI interconnect, your real compute IP, and FIFOs.
-
-Examples:
-
-| SLOTS | SLOT_BYTES | One pad | Both pads | Fit on 7010? |
-|------:|-----------:|--------:|----------:|:-------------|
-| 16 | 256 | 4 KiB | 8 KiB | yes, easy |
-| 32 | 512 | 16 KiB | 32 KiB | yes |
-| 64 | 512 | 32 KiB | 64 KiB | yes, watch other IP |
-| 64 | 2048 | 128 KiB | 256 KiB | tight / no |
-
-If you need larger payloads, prefer **reserved DDR** + AXI HP master
-instead of on-chip BRAM (see main README).
+| SLOTS | SLOT_BYTES | Both pads | Fit? |
+|------:|-----------:|----------:|:-----|
+| 16 | 256 | 8 KiB | easy |
+| 32 | 512 | 32 KiB | yes |
+| 64 | 512 | 64 KiB | watch other IP |
+| 64 | 2048 | 256 KiB | too tight |
 
 ## AXI-lite register map
 
-Relative to `AXIL_BASE` (example `0x43C0_0000`):
+Relative to `AXIL_BASE`:
 
 | Offset | Name | Access | Role |
 |--------|------|--------|------|
-| `0x00` | `DOORBELL_IN` | W1C set | CPU → PL “new ingress work” |
-| `0x04` | `DOORBELL_OUT` | W1C clear | PL → CPU “result ready” (also IRQ) |
-| `0x08` | `STATUS` | RO | bit0 = busy |
-| `0x0C` | `INGRESS_HEAD` | RW | mirror of ring A head |
-| `0x10` | `INGRESS_TAIL` | RW | mirror of ring A tail |
-| `0x14` | `EGRESS_HEAD` | RW | mirror of ring B head |
-| `0x18` | `EGRESS_TAIL` | RW | mirror of ring B tail |
-| `0x1C` | `CTRL` | RW | [0] enable, [1] irq_en, [31] soft reset |
+| `0x00` | `DOORBELL_IN` | W1S | CPU → PL: new ingress work |
+| `0x04` | `INGRESS_DONE` | W1C | PL → CPU: finished **reading** slot |
+| `0x08` | `EGRESS_READY` | W1C | PL → CPU: result **written** |
+| `0x0C` | `STATUS` | RO | `[0] busy [1] ingress_done [2] egress_ready` |
+| `0x10` | `LAST_IN_SLOT` | RO | slot index last read on A |
+| `0x14` | `LAST_OUT_SLOT` | RO | slot index last written on B |
+| `0x18` | `INGRESS_HEAD` | RW | optional mirrors |
+| `0x1C` | `INGRESS_TAIL` | RW | |
+| `0x20` | `EGRESS_HEAD` | RW | |
+| `0x24` | `EGRESS_TAIL` | RW | |
+| `0x28` | `CTRL` | RW | `[0] enable [1] irq_en [31] soft_reset` |
 
-Wire `irq_out` to a fabric interrupt input on the Zynq PS if `USE_IRQ=1`.
+## CPU-side handler sketch
 
-## How this lines up with the C side
+```c
+/* After IRQ or poll */
+if (readl(BASE + 0x04) & 1) {          /* INGRESS_DONE */
+    uint32_t slot = readl(BASE + 0x10); /* LAST_IN_SLOT */
+    rb_release(ring_a, slot);
+    writel(1, BASE + 0x04);            /* W1C clear */
+}
+if (readl(BASE + 0x08) & 1) {          /* EGRESS_READY */
+    /* rb_consume(ring_b, ...) then process result */
+    writel(1, BASE + 0x08);
+}
+```
 
-1. CPU `rb_publish` on ring A + `RB_HW_NOTIFY_DEVICE` → writes `DOORBELL_IN`.
-2. PL state machine hashes `scratch_a[slot]` and packs `zo_result` into
-   `scratch_b[slot]`.
-3. PL sets `DOORBELL_OUT` (and IRQ).
-4. CPU handler clears `DOORBELL_OUT`, invalidates the egress slot,
-   `rb_consume` / process / `rb_release` on ring B, and `rb_release` on
-   ring A when appropriate.
+`RB_HW_NOTIFY_DEVICE` on the CPU publish path writes `DOORBELL_IN` (`BASE+0x00`).
 
-The index mirrors are **optional helpers** for a PL-driven pipeline.
-The safest first bring-up keeps real `rb_*` ownership on the CPU and
-only uses the PL for payload transform + doorbells.
+## Pipeline order in this sketch
 
-## Synthesis notes
-
-- Set `USE_BRAM=1` for FPGA; `0` only for quick sim with tiny `SLOTS`.
-- Mark scratchpad CPU mappings non-cacheable **or** keep the
-  `RB_HW_FLUSH_SLOT` / `RB_HW_INVALIDATE_SLOT` paths in `hw_port.h`.
-- Connect port B of each BRAM (or an AXI BRAM controller) so the PS can
-  `memcpy` into the same bytes the PL reads.
-- Replace the one-byte-per-cycle hash with a wider datapath or a real
-  FFT/crypto IP when you outgrow the example.
+1. CPU publishes → `DOORBELL_IN`
+2. PL hashes bytes from `scratch_a` → raises **`INGRESS_DONE`** ("I have read the data")
+3. PL packs `zo_result` into `scratch_b` → raises **`EGRESS_READY`**
+4. CPU releases A and consumes B (order flexible; usually release soon for back-pressure)
 
 ## Simulation vs real FPGA
 
 ```text
-Simulation:  USE_BRAM=0, small SLOTS, feed AXI-lite from a testbench
-Real S9:     USE_BRAM=1, SLOTS/SLOT_BYTES sized to leftover BRAM,
-             AXIL_BASE = address you assigned in Vivado Address Editor,
-             irq_out → GIC, dual-port BRAM or DDR window shared with PS
+Simulation:  USE_BRAM=0, small SLOTS, testbench drives AXI-lite
+Real S9:     USE_BRAM=1, size to leftover BRAM,
+             AXIL_BASE from Vivado Address Editor,
+             irq_out → GIC, dual-port BRAM shared with PS
 ```
