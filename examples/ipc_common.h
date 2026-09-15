@@ -44,6 +44,27 @@ static inline size_t ipc_region_size(void) {
     return ipc_scratch_offset() + (size_t)RB_SLOTS * RB_SLOT_SIZE;
 }
 
+static inline size_t ipc_slot_size_for(size_t msg_size) {
+    return msg_size + RB_SLOT_HDR_SIZE;
+}
+
+static inline size_t ipc_slot_stride_for(size_t msg_size) {
+    size_t a = RB_SLOT_CACHELINE_PAD ? RB_CACHE_LINE : _Alignof(max_align_t);
+    size_t slot_size = ipc_slot_size_for(msg_size);
+    if (a < 4u) {
+        a = 4u;
+    }
+    return (slot_size + (a - 1u)) & ~((size_t)a - 1u);
+}
+
+static inline size_t ipc_scratch_size_for(size_t msg_size) {
+    return (size_t)RB_SLOTS * ipc_slot_stride_for(msg_size);
+}
+
+static inline size_t ipc_region_size_for(size_t msg_size) {
+    return ipc_scratch_offset() + ipc_scratch_size_for(msg_size);
+}
+
 static inline rb_t *ipc_ring(void *base) {
     return (rb_t *)base;
 }

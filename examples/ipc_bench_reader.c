@@ -14,11 +14,7 @@
 #include <time.h>
 #include <sched.h>
 #include <sys/mman.h>
-
-typedef struct {
-    uint64_t seq;
-    uint8_t data[RB_BENCH_MSG_SIZE - sizeof(uint64_t)];
-} bench_msg_t;
+#include <sys/stat.h>
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
@@ -32,16 +28,30 @@ static double elapsed_seconds(const struct timespec *start) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s -t <seconds>\n"
-            "  -t <seconds>  benchmark duration, required (no default)\n",
+            "Usage: %s -t <seconds> [-s <bytes>]\n"
+            "  -t <seconds>  benchmark duration, required (no default)\n"
+            "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n",
             prog);
 }
 
 int main(int argc, char **argv) {
     double seconds = -1.0;
+    unsigned msg_size = (unsigned)RB_BENCH_MSG_SIZE;
     int c;
-    while ((c = getopt(argc, argv, "t:")) != -1) {
+    while ((c = getopt(argc, argv, "t:s:")) != -1) {
         switch (c) {
+        case 's': {
+            char *end = NULL;
+            unsigned long v = strtoul(optarg, &end, 0);
+            if (!end || *end != '\0' || v < 4u || v > 4096u ||
+                (v & (v - 1u)) != 0u) {
+                fprintf(stderr, "%s: invalid -s value '%s' (power of two in [4, 4096])\n",
+                        argv[0], optarg);
+                return 2;
+            }
+            msg_size = (unsigned)v;
+            break;
+        }
         case 't': {
             char *end = NULL;
             seconds = strtod(optarg, &end);
@@ -63,33 +73,59 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, on_sigint);
 
-    int fd = shm_open(RB_SHM_NAME, O_RDWR, 0);
-    if (fd < 0) {
-        fprintf(stderr, "bench_reader: shm_open %s (start ipc_bench_writer first)\n",
-                RB_SHM_NAME);
-        perror("bench_reader: shm_open");
-        return 1;
-    }
+    struct timespec proc_start;
+    clock_gettime(CLOCK_MONOTONIC, &proc_start);
 
-    size_t sz = ipc_region_size();
-    void *base = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (base == MAP_FAILED) {
-        perror("bench_reader: mmap");
-        close(fd);
-        return 1;
+    int fd = -1;
+    size_t sz = 0;
+    void *base = MAP_FAILED;
+    for (;;) {
+        struct stat st;
+        fd = shm_open(RB_SHM_NAME, O_RDWR, 0);
+        if (fd >= 0) {
+            if (fstat(fd, &st) != 0) {
+                perror("bench_reader: fstat");
+                close(fd);
+                return 1;
+            }
+            sz = (size_t)st.st_size;
+            if (sz > 0) {
+                base = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if (base != MAP_FAILED) {
+                    close(fd);
+                    break;
+                }
+                perror("bench_reader: mmap");
+                close(fd);
+                return 1;
+            }
+            close(fd);
+        } else if (errno != ENOENT) {
+            perror("bench_reader: shm_open");
+            return 1;
+        }
+        if (elapsed_seconds(&proc_start) >= seconds + 2.0) {
+            fprintf(stderr,
+                    "bench_reader: %s not ready after %.1fs "
+                    "(start ipc_bench_writer first)\n",
+                    RB_SHM_NAME, seconds + 2.0);
+            return 1;
+        }
+        struct timespec ts = {0, 1 * 1000 * 1000};
+        nanosleep(&ts, NULL);
     }
-    close(fd);
 
     rb_t *rb = ipc_ring(base);
 
     uint64_t received = 0, bytes = 0, gaps = 0, truncations = 0;
     uint64_t empty_spins = 0, drain_empties = 0;
     uint64_t last_seq = 0;
+    uint64_t lat_sum = 0, lat_count = 0, lat_min = UINT64_MAX, lat_max = 0;
     struct timespec window_start;
     int have_window = 0;
 
-    printf("bench_reader: pid=%d shm=%s size=%zu B\n",
-           (int)getpid(), RB_SHM_NAME, sz);
+    printf("bench_reader: pid=%d shm=%s size=%zu B msg=%u B\n",
+           (int)getpid(), RB_SHM_NAME, sz, msg_size);
     printf("bench_reader: waiting for first message ...\n");
     fflush(stdout);
 
@@ -115,7 +151,14 @@ int main(int argc, char **argv) {
             continue;
         }
         if (r == RB_ERR_NOT_INIT) {
-            break;
+            if (have_window) {
+                break;
+            }
+            if (elapsed_seconds(&proc_start) >= seconds + 2.0) {
+                break;
+            }
+            sched_yield();
+            continue;
         }
         if (r != RB_OK) {
             fprintf(stderr, "bench_reader: consume error %d\n", (int)r);
@@ -123,18 +166,34 @@ int main(int argc, char **argv) {
         }
         drain_empties = 0;
 
-        if (trunc || szmsg < sizeof(uint64_t)) {
+        if (trunc || szmsg < 4u) {
             truncations++;
         } else {
-            uint64_t seq;
+            uint32_t seq;
             memcpy(&seq, w, sizeof seq);
             if (!have_window) {
                 have_window = 1;
                 clock_gettime(CLOCK_MONOTONIC, &window_start);
-            } else if (seq != last_seq + 1u) {
+            } else if ((uint32_t)((uint64_t)seq - last_seq) != 1u) {
                 gaps++;
             }
             last_seq = seq;
+            if (msg_size >= 12u && szmsg >= 12u) {
+                uint64_t ts;
+                struct timespec now;
+                memcpy(&ts, (const uint8_t *)w + 4, sizeof ts);
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                uint64_t d = (uint64_t)now.tv_sec * 1000000000ull +
+                             (uint64_t)now.tv_nsec - ts;
+                lat_sum += d;
+                lat_count++;
+                if (d < lat_min) {
+                    lat_min = d;
+                }
+                if (d > lat_max) {
+                    lat_max = d;
+                }
+            }
         }
         bytes += szmsg;
         received++;
@@ -158,10 +217,19 @@ int main(int argc, char **argv) {
 
     double s = elapsed_seconds(&window_start);
     double msg_s = s > 0.0 ? (double)received / s : 0.0;
-    double mb_s = msg_s * (double)sizeof(bench_msg_t) / 1e6;
+    double mb_s = msg_s * (double)msg_size / 1e6;
+    char lat[96];
+    if (msg_size >= 12u && lat_count > 0u) {
+        snprintf(lat, sizeof lat, ", latency avg %llu min %llu max %llu ns",
+                 (unsigned long long)(lat_sum / lat_count),
+                 (unsigned long long)lat_min,
+                 (unsigned long long)lat_max);
+    } else {
+        snprintf(lat, sizeof lat, ", latency n/a ns");
+    }
     printf("bench_reader: done. %llu received, %llu bytes, %llu gaps, "
            "%llu trims, %llu empty_spins, target %.1f s, "
-           "measured %.3f s, %.0f msg/s, %.2f MB/s\n",
+           "measured %.3f s, %.0f msg/s, %.2f MB/s%s\n",
            (unsigned long long)received,
            (unsigned long long)bytes,
            (unsigned long long)gaps,
@@ -170,7 +238,8 @@ int main(int argc, char **argv) {
            seconds,
            s,
            msg_s,
-           mb_s);
+           mb_s,
+           lat);
     fflush(stdout);
 
     munmap(base, sz);
