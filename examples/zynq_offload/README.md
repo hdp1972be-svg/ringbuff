@@ -87,6 +87,8 @@ as the base OS if you do not want a full Petalinux rebuild.
 | `hw_port.h` | Example overrides of the three `RB_HW_*` macros |
 | `cpu_host.c` | PS-side program (producer on A, consumer on B) |
 | `fpga_stub.c` | Userspace model of the PL path (host testing) |
+| `hdl/rb_offload_pl.v` | Parameterized Verilog PL sketch (BRAM + doorbells + hash) |
+| `hdl/README.md` | HDL parameters, AXI-lite map, BRAM budget table |
 | `README.md` | This file |
 
 ---
@@ -142,6 +144,7 @@ a custom char device. Pass the same physical base to the PL via AXI.
 Instantiate dual-port BRAM in Vivado, connect one port to an AXI BRAM
 controller (PS) and the other to your PL pipeline. Size the rings so
 `2 × slots × slot_size` fits in the BRAM you allocate (often tens of KB).
+See `hdl/README.md` for a concrete budget table on XC7Z010.
 
 ### 2. Replace the three hardware stubs
 
@@ -162,10 +165,10 @@ In `hw_port.h` (or a board-specific header):
     dsb(); \
 } while (0)
 
-/* Kick the PL */
+/* Kick the PL — address must match AXIL_BASE + 0x00 in the HDL */
 #define RB_HW_NOTIFY_DEVICE(rb, idx, len, trunc) do { \
     (void)(rb); (void)(idx); (void)(len); (void)(trunc); \
-    writel(1, fpga_doorbell_reg); /* AXI-lite */ \
+    writel(1, (volatile uint32_t *)0x43C00000u); /* DOORBELL_IN */ \
 } while (0)
 ```
 
@@ -185,21 +188,35 @@ Pick one:
 
 Recommended for first bring-up: **IRQ → kernel/userspace handler → `rb_release` / drain ring B**. Keep a single consumer context per ring.
 
-### 4. FPGA design sketch (PL)
+### 4. FPGA design (PL) — see `hdl/`
 
-Minimal streaming pipeline:
+A parameterized Verilog module lives in:
 
-1. **AXI master** (or BRAM port) reads the next ingress slot when the
-   doorbell fires or a free-running poller sees a new index.
-2. **Compute block**: rolling hash, AES round, small FFT, EWMA, etc.
-   Stream through DSP48s; keep state in BRAM registers.
-3. **Write result** into the next egress slot.
-4. **Advance ownership**: either the PL writes the ring indices itself
-   (advanced) or it only fills payload + sets a completion flag and the
-   CPU performs `rb_release` / `rb_publish` (safer first step).
+- `hdl/rb_offload_pl.v` — BRAM scratchpads, AXI-lite doorbells, streaming hash
+- `hdl/README.md` — parameters, register map, BRAM fit table
 
-Resource budget on XC7Z010 is tight. Prefer fixed-point, streaming,
-and reuse of DSP/BRAM over large soft CPUs.
+Default geometry (`SLOTS=16`, `SLOT_BYTES=256`) uses **8 KiB** total for
+both pads — comfortable on a 7010. Compile switches:
+
+| Parameter | Role |
+|-----------|------|
+| `USE_BRAM` | 1 = Block RAM (real FPGA), 0 = regs (sim only) |
+| `USE_IRQ` | Drive `irq_out` when egress doorbell is set |
+| `USE_HASH` | 1 = FNV hash pipeline, 0 = bring-up store only |
+| `AXIL_BASE` | Informational; set to the address you assign in Vivado |
+
+Example AXI-lite map (`AXIL_BASE = 0x43C00000`):
+
+| Offset | Register |
+|--------|----------|
+| `+0x00` | `DOORBELL_IN` (CPU → PL) |
+| `+0x04` | `DOORBELL_OUT` (PL → CPU / IRQ) |
+| `+0x08` | `STATUS` |
+| `+0x0C`…`+0x18` | index mirrors |
+| `+0x1C` | `CTRL` (enable, irq_en, soft reset) |
+
+Point `RB_HW_NOTIFY_DEVICE` at `DOORBELL_IN` and clear `DOORBELL_OUT`
+from the CPU IRQ handler.
 
 ### 5. Software split on the PS
 
@@ -217,9 +234,11 @@ point of the dual-ring offload.
 
 - Cross-compile `cpu_host` (and any small helper) with the Petalinux or
   community toolchain for `arm-linux-gnueabihf` / aarch32.
+- Synthesize `rb_offload_pl` in Vivado with `USE_BRAM=1` and your chosen
+  `SLOTS` / `SLOT_BYTES`.
 - Ship a bitstream that exposes:
-  - AXI window onto the shared scratchpads (or BRAM),
-  - doorbell registers,
+  - dual-port BRAM (or DDR window) for the scratchpads,
+  - AXI-lite doorbell block at a fixed address,
   - optional IRQ line to the GIC.
 - Boot: SD or NAND with a rootfs that has your binary and the bitstream
   loaded early (U-Boot / fpga manager).
@@ -235,27 +254,24 @@ rb_acquire(ring_A)
 write payload into slot
 RB_HW_FLUSH_SLOT             (cache clean + dsb)
 rb_publish(ring_A)
-RB_HW_NOTIFY_DEVICE  ──────► doorbell / IRQ
-                                                      rb_consume(ring_A)
-                                                      RB_HW_INVALIDATE_SLOT
+RB_HW_NOTIFY_DEVICE  ──────► DOORBELL_IN / IRQ
+                                                      read scratch_a
                                                       hash / FFT / …
-                                                      rb_acquire(ring_B)
-                                                      write result
-                                                      RB_HW_FLUSH_SLOT
-                                                      rb_publish(ring_B)
-                                                      notify CPU
-rb_consume(ring_B)   ◄────── (IRQ or flag)
+                                                      write scratch_b
+                                                      DOORBELL_OUT / IRQ
+rb_consume(ring_B)   ◄──────
 RB_HW_INVALIDATE_SLOT
 use result
 rb_release(ring_B)
-                                                      rb_release(ring_A)
+                                                      (CPU also rb_release A)
 ```
 
 ---
 
 ## Example “crunch” in this tree
 
-The software stub computes a 32-bit FNV-style hash and returns:
+The software stub and the Verilog both compute a 32-bit FNV-style hash
+and return:
 
 ```c
 struct zo_result {
@@ -266,9 +282,9 @@ struct zo_result {
 };
 ```
 
-On the real PL, replace that with whatever fits the DSP/BRAM budget:
-streaming FFT bins, indicator vector, encrypted blob, compressed chunk,
-etc. The ring protocol stays the same.
+On the real PL, replace that block with whatever fits the DSP/BRAM
+budget: streaming FFT bins, indicator vector, encrypted blob, compressed
+chunk, etc. The ring protocol stays the same.
 
 ---
 
