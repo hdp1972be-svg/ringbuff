@@ -88,96 +88,6 @@ The writer formats each message as `"msg #<seq> from pid <pid> at
 <time>"`. The reader parses the sequence number and checks it is
 exactly one more than the previous. Any gap, duplication, or reorder
 would show up as `gaps > 0` in the reader's summary. Under normal
-operation this should always be zero. Examples
-
-## IPC ring buffer — two processes sharing a ring in POSIX shared memory
-
-`ipc_writer` and `ipc_reader` demonstrate using `rb` as an
-inter-process ring buffer. The ring control block and the scratchpad
-both live in a single `shm_open` region. The writer publishes messages;
-the reader drains them and verifies the sequence is intact.
-
-No threads are used. Two independent OS processes coordinate through
-shared memory alone.
-
-### Layout
-
-```
-            /dev/shm/rb_ipc_demo  (mmap'd by both processes)
-            ┌──────────────────────────────────────────────┐
-            │  rb_t control block       (RB_CACHE_LINE)    │
-            │  scratchpad               (RB_CACHE_LINE)    │
-            └──────────────────────────────────────────────┘
-                  ▲                              ▲
-                  │                              │
-           ipc_reader (mmap)              ipc_writer (mmap + init)
-```
-
-### Build
-
-```bash
-cmake -B build -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-### Run
-
-Terminal 1:
-
-```bash
-./build/examples/ipc_reader
-```
-
-Terminal 2:
-
-```bash
-./build/examples/ipc_writer
-```
-
-The writer publishes 100,000 messages and exits. The reader drains them
-and reports `gaps=0`.
-
-### Cleanup
-
-The writer deliberately does **not** unlink the shared memory, because
-the reader may still be attached when the writer exits. After both
-processes have terminated:
-
-```bash
-rm /dev/shm/rb_ipc_demo
-```
-
-If the writer fails with `File exists`, the segment is stale from a
-previous run. Remove it and try again.
-
-### What this example demonstrates
-
-- The ring and scratchpad can live in any shared memory region.
-- `rb_acquire` / `rb_publish` / `rb_consume` / `rb_release` all work
-  unchanged across process boundaries.
-- The scratchpad alignment requirement (`RB_CACHE_LINE`) is satisfied
-  because `mmap` returns page-aligned memory, and the scratchpad offset
-  is rounded up to the next cache line.
-- Backpressure works across processes: when the reader is slow, the
-  writer's `rb_acquire` returns `RB_ERR_FULL` and it retries.
-
-### What this example does not demonstrate
-
-- **Notification.** The reader polls every 50 µs. For production use,
-  replace the poll with `rb_wait(rb, snapshot, timeout)` — the ring's
-  `head` counter is in shared memory, and `futex_wait` on a
-  `MAP_SHARED` address wakes cross-process. See `docs/API.md` for
-  the correct snapshot-before-drain loop.
-- **Process-shared eventfd.** For event-loop integration, an `eventfd`
-  created by the writer can be passed to the reader via `fork`,
-  `SCM_RIGHTS`, or a named pipe. That path is out of scope here.
-
-### Sequence verification
-
-The writer formats each message as `"msg #<seq> from pid <pid> at
-<time>"`. The reader parses the sequence number and checks it is
-exactly one more than the previous. Any gap, duplication, or reorder
-would show up as `gaps > 0` in the reader's summary. Under normal
 operation this should always be zero.
 
 ---
@@ -400,3 +310,32 @@ up to `_Alignof(max_align_t)` (16 bytes on x86-64). No special
 alignment is needed for this configuration. For embedded targets with
 `RB_SLOT_CACHELINE_PAD=1`, use `posix_memalign` or a static
 `_Alignas(RB_CACHE_LINE)` buffer instead.
+
+---
+
+## Zynq-7000 / Antminer S9 dual-ring offload
+
+`examples/zynq_offload/` is a complete CPU ↔ FPGA offload sketch aimed at
+Petalinux on the PS and programmable logic on the PL (Antminer S9 class
+boards).
+
+- **Ring A (ingress):** CPU publishes WebSocket JSON frames; FPGA consumes.
+- **Ring B (egress):** FPGA publishes hashed/processed results; CPU drains.
+- Scratchpads live in a shared region (POSIX shm for host testing, reserved
+  DDR/BRAM on the real board).
+- Uses the `RB_HW_FLUSH_SLOT` / `RB_HW_INVALIDATE_SLOT` / `RB_HW_NOTIFY_DEVICE`
+  stubs for cache visibility and doorbells.
+
+```bash
+cmake -B build -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target zynq_cpu_host zynq_fpga_stub
+
+# Terminal 1
+./build/examples/zynq_fpga_stub
+
+# Terminal 2
+./build/examples/zynq_cpu_host
+```
+
+See `examples/zynq_offload/README.md` for the memory map, Petalinux device-tree
+notes, and how to replace the software stub with real AXI/BRAM logic.
