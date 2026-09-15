@@ -70,4 +70,21 @@
 #else
 #  define RB_ALIGNAS(n) __attribute__((aligned(n)))
 #endif
+
+/* ---------------- Prefetch ----------------
+ * RB_PREFETCH_R(p) hints that *p will be read soon.
+ * RB_PREFETCH_W(p) hints that *p will be written soon.
+ *
+ * On x86 and ARM these compile to a single instruction. On targets
+ * without a prefetch instruction they compile to nothing. The hint is
+ * advisory; correctness never depends on it.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#  define RB_PREFETCH_R(p) __builtin_prefetch((const void *)(p), 0, 3)
+#  define RB_PREFETCH_W(p) __builtin_prefetch((const void *)(p), 1, 3)
+#else
+#  define RB_PREFETCH_R(p) ((void)0)
+#  define RB_PREFETCH_W(p) ((void)0)
+#endif
+
 #endif /* RB_PORT_H */

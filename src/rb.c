@@ -275,8 +275,14 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
     rb->pending_wanted = wanted_len;
     if (out_slot_index)
         *out_slot_index = slot_index;
-    if (out_writable)
-        *out_writable = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride + RB_SLOT_HDR_SIZE;
+    if (out_writable) {
+        uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+        void *w = slot + RB_SLOT_HDR_SIZE;
+        *out_writable = w;
+        /* The caller will write into this line next. Start the fetch now,
+           while it does whatever prep work precedes its memcpy. */
+        RB_PREFETCH_W(w);
+    }
     if (out_cap)
         *out_cap = cap;
     return RB_OK;
@@ -422,8 +428,12 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     rb->consumer_slot = slot_index;
     if (out_slot_index)
         *out_slot_index = slot_index;
-    if (out_obj)
-        *out_obj = slot + RB_SLOT_HDR_SIZE;
+    if (out_obj) {
+        const void *obj = slot + RB_SLOT_HDR_SIZE;
+        *out_obj = obj;
+        /* The caller will read from this line next. */
+        RB_PREFETCH_R(obj);
+    }
     if (out_len)
         *out_len = len;
     if (out_truncated)
