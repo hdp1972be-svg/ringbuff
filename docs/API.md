@@ -197,8 +197,17 @@ The ones that affect the public API's behaviour:
 | `RB_ENABLE_STATS` | `1` | 1 = compile in counters |
 | `RB_ENABLE_THREAD_HELPERS` | `1` | 1 = build `rb_thread.c` |
 | `RB_ENABLE_NOTIFY` | `0` | 1 = futex + eventfd wake-up helpers in `rb.c` |
-| `RB_DEFAULT_LOW_D` | `25` | Default low_d percentage |
-| `RB_DEFAULT_LOW_E` | `10` | Default low_e percentage |
+| `RB_DEFAULT_LOW_D` | `25u` | Default low_d percentage |
+| `RB_DEFAULT_LOW_E` | `10u` | Default low_e percentage |
+| `RB_FUTEX_SHARED` | `0` | Process-shared futex for wake-up (cleared by default) |
+| `RB_NOTIFY_WAIT_SLICE_MS` | `100u` | Notify wait slice, in ms |
+| `RB_DEFAULT_PRODUCER_STACK` | `(256u * 1024u)` | Default producer thread stack size in bytes |
+| `RB_DEFAULT_CONSUMER_STACK` | `(256u * 1024u)` | Default consumer thread stack size in bytes |
+| `RB_THREAD_MIN_STACK` | `(64u * 1024u)` | Minimum allowed thread stack size in bytes |
+| `RB_MEMCPY` / `RB_MEMSET`* | `memcpy` / `memset` | Memory copy helpers (in `rb_port.h`) |
+| `RB_PREFETCH_R` / `RB_PREFETCH_W`* | `__builtin_prefetch` / no-op | Prefetch helpers (in `rb_port.h`) |
+
+\* Portability hooks defined in `rb_port.h`, not `rb_config.h`; see [Dependencies](DEPENDENCIES.md) and [Changelog](CHANGELOG.md).
 
 ---
 

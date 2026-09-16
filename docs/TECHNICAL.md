@@ -271,6 +271,14 @@ allocated with `rb_size()` do not change when switching modes. The practical
 difference is throughput and cache behaviour, not the API or the memory
 footprint of the control block.
 
+## Configuration
+
+The library is configured entirely at compile time through macros declared in
+`include/rb_config.h`, each with a documented default in the
+[Compile-time configuration](API.md#compile-time-configuration) table in the
+API notes. Portability hooks (`RB_MEMCPY`, `RB_MEMSET`, `RB_PREFETCH_R`,
+`RB_PREFETCH_W`) live in `include/rb_port.h` and are listed in the same table.
+
 ## Choosing a mode
 
 - **Mode 0** keeps the exact historical layout and semantics; choose it for

@@ -114,9 +114,9 @@
  *
  *   // FPGA / AXI dual-port BRAM (non-coherent)
  *   #define RB_HW_FLUSH_SLOT(rb, idx)      \
- *       do { dsb(sy); /* or writel fence */ } while (0)
+ *       do { dsb(sy); } while (0)   // writel fence
  *   #define RB_HW_INVALIDATE_SLOT(rb, idx) \
- *       do { /* invalidate CPU cache lines of the slot */ } while (0)
+ *       do { } while (0)  // invalidate CPU cache lines of the slot
  *
  *   // DMA engine that will read the slot after publish
  *   #define RB_HW_FLUSH_SLOT(rb, idx)      dma_sync_for_device((rb), (idx))
