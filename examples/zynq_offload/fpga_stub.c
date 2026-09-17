@@ -15,7 +15,12 @@
  *
  * Usage:
  *   ./zynq_fpga_stub [-t <seconds>]
- *   -t <seconds>  max runtime (default: run until ~2 s of idle)
+ *   -t <seconds>  run for this wall-clock duration (recommended)
+ *                 without -t: exit after ~2 s of idle ingress
+ *
+ * Typical pair:
+ *   terminal 1: ./zynq_fpga_stub -t 70
+ *   terminal 2: ./zynq_cpu_host  -t 60
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -69,7 +74,16 @@ static struct zo_shared *map_shared(void)
     return NULL;
 }
 
-static int process_one(rb_t *in, rb_t *out)
+/*
+ * Process one ingress frame.
+ * Returns:
+ *   1  processed
+ *   0  ingress empty
+ *  -1  hard error
+ *   2  timed out waiting for egress space (CPU not draining)
+ */
+static int process_one(rb_t *in, rb_t *out,
+                       const struct timespec *start, double max_seconds)
 {
     uint32_t idx = 0, len = 0;
     const void *obj = NULL;
@@ -83,11 +97,9 @@ static int process_one(rb_t *in, rb_t *out)
     uint32_t h = zo_fast_hash(obj, len);
     uint32_t seq = ++g_zo->bell.seq_out;
 
-    /* Ingress payload is a NUL-terminated JSON string in this demo. */
     printf("FPGA consumed ingress slot %u len=%u trunc=%d seq=%u hash=0x%08x\n",
            idx, len, (int)trunc, seq, h);
     if (len > 0) {
-        /* Print as text up to first NUL or len, whichever comes first. */
         uint32_t plen = len;
         const char *s = (const char *)obj;
         for (uint32_t i = 0; i < len; i++) {
@@ -99,18 +111,29 @@ static int process_one(rb_t *in, rb_t *out)
         printf("FPGA json (%u B): %.*s\n", plen, (int)plen, s);
     }
 
-    /* Publish result into egress ring B. */
+    /* Publish result into egress ring B — must not block forever. */
     uint32_t oidx = 0, ocap = 0;
     void *w = NULL;
+    int full_spins = 0;
     for (;;) {
+        if (max_seconds > 0.0 && elapsed_seconds(start) >= max_seconds) {
+            fprintf(stderr, "FPGA: duration expired while waiting for egress space\n");
+            rb_release(in, idx);
+            return 2;
+        }
+
         rb_err_t e = rb_acquire(out, sizeof(struct zo_result), &oidx, &w, &ocap);
         if (e == RB_OK)
             break;
         if (e == RB_ERR_FULL) {
-            sleep_us(50);
+            if ((++full_spins % 1000) == 0) {
+                fprintf(stderr,
+                        "FPGA: egress ring full (CPU not draining?) — waiting…\n");
+            }
+            sleep_us(100);
             continue;
         }
-        fprintf(stderr, "FPGA rb_acquire(egress) failed\n");
+        fprintf(stderr, "FPGA rb_acquire(egress) failed (%d)\n", (int)e);
         rb_release(in, idx);
         return -1;
     }
@@ -139,7 +162,10 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
             "Usage: %s [-t <seconds>]\n"
-            "  -t <seconds>  max runtime (default: exit after ~2 s idle)\n",
+            "  -t <seconds>  wall-clock runtime (recommended for continuous runs)\n"
+            "                without -t: exit after ~2 s of idle ingress\n"
+            "\n"
+            "Pair with: ./zynq_cpu_host -t <seconds>\n",
             prog);
 }
 
@@ -167,7 +193,9 @@ int main(int argc, char **argv)
 
     printf("zynq_offload fpga_stub — waiting for shared region");
     if (max_seconds > 0.0)
-        printf(" (max %.2fs)", max_seconds);
+        printf(" (run for %.2fs)", max_seconds);
+    else
+        printf(" (idle-exit after ~2s)");
     printf("\n");
 
     g_zo = map_shared();
@@ -177,9 +205,9 @@ int main(int argc, char **argv)
     rb_t *in  = zo_ring_a(g_zo);
     rb_t *out = zo_ring_b(g_zo);
 
-    printf("FPGA stub ready — processing until idle");
+    printf("FPGA stub ready — processing continuously");
     if (max_seconds > 0.0)
-        printf(" or %.2fs elapsed", max_seconds);
+        printf(" for %.2fs", max_seconds);
     printf("\n");
 
     struct timespec start;
@@ -187,22 +215,32 @@ int main(int argc, char **argv)
 
     int total = 0;
     int idle_rounds = 0;
-    while (idle_rounds < 100) {          /* ~2 s of idle → exit */
+    const int idle_limit = 100; /* ~2 s only used when no -t */
+
+    for (;;) {
         if (max_seconds > 0.0 && elapsed_seconds(&start) >= max_seconds)
             break;
-        int n = process_one(in, out);
-        if (n > 0) {
-            total += n;
+
+        int n = process_one(in, out, &start, max_seconds);
+        if (n == 1) {
+            total += 1;
             idle_rounds = 0;
             g_zo->bell.cpu_to_fpga = 0; /* clear doorbell */
         } else if (n == 0) {
             idle_rounds++;
+            /* Only exit on idle when the user did not pass -t. */
+            if (max_seconds < 0.0 && idle_rounds >= idle_limit)
+                break;
             sleep_us(20000);
+        } else if (n == 2) {
+            /* Duration expired while blocked on egress — normal end. */
+            break;
         } else {
             return 2;
         }
     }
 
-    printf("FPGA stub done, processed %d frames\n", total);
+    printf("FPGA stub done, processed %d frames (%.2fs elapsed)\n",
+           total, elapsed_seconds(&start));
     return 0;
 }
