@@ -16,6 +16,11 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+/* Cap stored latency samples so a multi-minute run cannot exhaust RAM.
+ * 16M × 8 B ≈ 128 MiB. Beyond the cap we keep min/max/avg but stop
+ * collecting for percentiles. */
+#define LAT_CAP (16u * 1024u * 1024u)
+
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 
@@ -26,12 +31,32 @@ static double elapsed_seconds(const struct timespec *start) {
            (double)(now.tv_nsec - start->tv_nsec) / 1e9;
 }
 
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a;
+    uint64_t y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
+/* Nearest-rank percentile. samples must be sorted ascending, n >= 1.
+ * p is in (0, 100]; returns samples[round((p/100)*(n-1))]. */
+static uint64_t percentile(const uint64_t *samples, size_t n, double p) {
+    if (n == 0)
+        return 0;
+    if (n == 1)
+        return samples[0];
+    double rank = (p / 100.0) * (double)(n - 1);
+    size_t i = (size_t)(rank + 0.5);
+    if (i >= n)
+        i = n - 1;
+    return samples[i];
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s -t <seconds> [-s <bytes>]\n"
             "  -t <seconds>  benchmark duration, required (no default)\n"
             "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n",
-            prog);
+            prog, (unsigned)RB_BENCH_MSG_SIZE);
 }
 
 int main(int argc, char **argv) {
@@ -121,6 +146,12 @@ int main(int argc, char **argv) {
     uint64_t empty_spins = 0, drain_empties = 0;
     uint64_t last_seq = 0;
     uint64_t lat_sum = 0, lat_count = 0, lat_min = UINT64_MAX, lat_max = 0;
+
+    /* Growable sample buffer for percentile calculation. */
+    uint64_t *lat_samples = NULL;
+    size_t lat_n = 0, lat_cap = 0;
+    int lat_capped = 0;
+
     struct timespec window_start;
     int have_window = 0;
 
@@ -193,6 +224,28 @@ int main(int argc, char **argv) {
                 if (d > lat_max) {
                     lat_max = d;
                 }
+                /* Collect sample for percentiles (until LAT_CAP). */
+                if (!lat_capped) {
+                    if (lat_n >= lat_cap) {
+                        size_t nc = lat_cap ? lat_cap * 2u : 65536u;
+                        if (nc > LAT_CAP)
+                            nc = LAT_CAP;
+                        uint64_t *nbuf = (uint64_t *)realloc(lat_samples,
+                                                             nc * sizeof(uint64_t));
+                        if (!nbuf) {
+                            /* OOM — keep running without further samples. */
+                            lat_capped = 1;
+                        } else {
+                            lat_samples = nbuf;
+                            lat_cap = nc;
+                        }
+                    }
+                    if (!lat_capped && lat_n < lat_cap) {
+                        lat_samples[lat_n++] = d;
+                        if (lat_n >= LAT_CAP)
+                            lat_capped = 1;
+                    }
+                }
             }
         }
         bytes += szmsg;
@@ -211,6 +264,7 @@ int main(int argc, char **argv) {
 
     if (!have_window) {
         printf("bench_reader: no messages received\n");
+        free(lat_samples);
         munmap(base, sz);
         return 1;
     }
@@ -218,12 +272,34 @@ int main(int argc, char **argv) {
     double s = elapsed_seconds(&window_start);
     double msg_s = s > 0.0 ? (double)received / s : 0.0;
     double mb_s = msg_s * (double)msg_size / 1e6;
-    char lat[96];
+    char lat[256];
     if (msg_size >= 12u && lat_count > 0u) {
-        snprintf(lat, sizeof lat, ", latency avg %llu min %llu max %llu ns",
-                 (unsigned long long)(lat_sum / lat_count),
-                 (unsigned long long)lat_min,
-                 (unsigned long long)lat_max);
+        if (lat_n > 0) {
+            qsort(lat_samples, lat_n, sizeof(uint64_t), cmp_u64);
+            uint64_t p10  = percentile(lat_samples, lat_n, 10.0);
+            uint64_t p50  = percentile(lat_samples, lat_n, 50.0);
+            uint64_t p90  = percentile(lat_samples, lat_n, 90.0);
+            uint64_t p99  = percentile(lat_samples, lat_n, 99.0);
+            uint64_t p999 = percentile(lat_samples, lat_n, 99.9);
+            snprintf(lat, sizeof lat,
+                     ", latency avg %llu min %llu max %llu ns"
+                     " | p10 %llu p50 %llu p90 %llu p99 %llu p99.9 %llu ns"
+                     "%s",
+                     (unsigned long long)(lat_sum / lat_count),
+                     (unsigned long long)lat_min,
+                     (unsigned long long)lat_max,
+                     (unsigned long long)p10,
+                     (unsigned long long)p50,
+                     (unsigned long long)p90,
+                     (unsigned long long)p99,
+                     (unsigned long long)p999,
+                     lat_capped ? " (samples capped)" : "");
+        } else {
+            snprintf(lat, sizeof lat, ", latency avg %llu min %llu max %llu ns",
+                     (unsigned long long)(lat_sum / lat_count),
+                     (unsigned long long)lat_min,
+                     (unsigned long long)lat_max);
+        }
     } else {
         snprintf(lat, sizeof lat, ", latency n/a ns");
     }
@@ -242,6 +318,7 @@ int main(int argc, char **argv) {
            lat);
     fflush(stdout);
 
+    free(lat_samples);
     munmap(base, sz);
     return 0;
 }
