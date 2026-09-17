@@ -3,8 +3,12 @@
  * CPU side of the Zynq dual-ring offload example.
  *
  * Simulates "NIC / WebSocket JSON arrived" by publishing JSON frames
- * into ring A for a configurable duration, then drains hashed results
- * from ring B.
+ * into ring A for a configurable duration, while draining hashed
+ * results from ring B as they arrive.
+ *
+ * Requires the FPGA side to be running in parallel:
+ *   terminal 1: ./zynq_fpga_stub -t 70
+ *   terminal 2: ./zynq_cpu_host  -t 60
  *
  * On a real Antminer S9 replace the shm_open path with mmap of the
  * reserved DDR/BRAM window and feed real socket data into the publish
@@ -100,13 +104,26 @@ static const char *sample_json[] = {
     "{\"id\":5,\"method\":\"mining.notify\",\"params\":[\"job\",\"prev\",\"cb\"]}",
 };
 
-static int publish_json(rb_t *ring, const char *json, uint32_t seq)
+/*
+ * Try to publish one JSON.  Returns:
+ *   0  success
+ *  -1  hard error
+ *   1  timed out waiting for free slot (duration expired / backpressure)
+ *
+ * While the ring is full we keep polling the deadline so -t is respected
+ * even if the FPGA side is slow or missing.
+ */
+static int publish_json(rb_t *ring, const char *json, uint32_t seq,
+                        const struct timespec *start, double seconds)
 {
     uint32_t idx = 0, cap = 0;
     void *w = NULL;
     uint32_t want = (uint32_t)strlen(json) + 1u; /* include NUL for demo */
 
     for (;;) {
+        if (elapsed_seconds(start) >= seconds)
+            return 1; /* duration over while waiting for space */
+
         rb_err_t e = rb_acquire(ring, want, &idx, &w, &cap);
         if (e == RB_OK)
             break;
@@ -130,36 +147,20 @@ static int publish_json(rb_t *ring, const char *json, uint32_t seq)
     return 0;
 }
 
-/* Drain egress results until quiet for quiet_s, or overall deadline. */
-static int drain_results(rb_t *ring, double quiet_s, const struct timespec *deadline_start,
-                         double deadline_s)
+/* Drain all currently available egress results (non-blocking). */
+static int drain_available(rb_t *ring)
 {
     int got = 0;
-    struct timespec last_hit;
-    clock_gettime(CLOCK_MONOTONIC, &last_hit);
-    int have_hit = 0;
-
     for (;;) {
-        if (elapsed_seconds(deadline_start) >= deadline_s)
-            break;
-
         uint32_t idx = 0, len = 0;
         const void *obj = NULL;
         bool trunc = false;
 
         if (rb_consume(ring, &idx, &obj, &len, &trunc) != RB_OK) {
-            if (g_zo->bell.fpga_to_cpu) {
+            if (g_zo->bell.fpga_to_cpu)
                 g_zo->bell.fpga_to_cpu = 0;
-                continue;
-            }
-            if (have_hit && elapsed_seconds(&last_hit) >= quiet_s)
-                break;
-            sleep_us(200);
-            continue;
+            break;
         }
-
-        clock_gettime(CLOCK_MONOTONIC, &last_hit);
-        have_hit = 1;
 
         if (len < sizeof(struct zo_result)) {
             fprintf(stderr, "short result len=%u\n", len);
@@ -171,7 +172,6 @@ static int drain_results(rb_t *ring, double quiet_s, const struct timespec *dead
         printf("CPU  result: seq=%u hash=0x%08x in_len=%u tag=%.4s%s\n",
                r->seq, r->hash, r->in_len, r->tag,
                trunc ? " (trunc)" : "");
-        /* Extra payload past the fixed header, if any. */
         if (len > sizeof(struct zo_result)) {
             const uint8_t *extra = (const uint8_t *)obj + sizeof(struct zo_result);
             uint32_t elen = len - (uint32_t)sizeof(struct zo_result);
@@ -190,14 +190,42 @@ static int drain_results(rb_t *ring, double quiet_s, const struct timespec *dead
     return got;
 }
 
+/* After publish window: keep draining until quiet or deadline. */
+static int drain_until_quiet(rb_t *ring, double quiet_s,
+                             const struct timespec *start, double deadline_s)
+{
+    int got = 0;
+    struct timespec last_hit;
+    clock_gettime(CLOCK_MONOTONIC, &last_hit);
+    int have_hit = 0;
+
+    for (;;) {
+        if (elapsed_seconds(start) >= deadline_s)
+            break;
+
+        int n = drain_available(ring);
+        if (n > 0) {
+            got += n;
+            clock_gettime(CLOCK_MONOTONIC, &last_hit);
+            have_hit = 1;
+            continue;
+        }
+        if (have_hit && elapsed_seconds(&last_hit) >= quiet_s)
+            break;
+        sleep_us(200);
+    }
+    return got;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
             "Usage: %s -t <seconds>\n"
             "  -t <seconds>  publish duration (required, > 0)\n"
             "\n"
-            "Cycles sample WebSocket JSON frames into ring A for the given\n"
-            "duration, then drains hashed results from ring B.\n",
+            "Continuously cycles sample WebSocket JSON into ring A for the\n"
+            "given wall-clock duration while draining results from ring B.\n"
+            "Start ./zynq_fpga_stub in another terminal first (or in parallel).\n",
             prog);
 }
 
@@ -229,11 +257,13 @@ int main(int argc, char **argv)
 
     printf("zynq_offload cpu_host — creating shared region (duration=%.2fs)\n",
            seconds);
+    printf("hint: start ./zynq_fpga_stub [-t %.0f] in another terminal\n",
+           seconds + 10.0);
+
     g_zo = map_shared(1);
     if (!g_zo)
         return 1;
 
-    /* Sanity-check alignment before rb_init (which also checks). */
     if (((uintptr_t)zo_ring_a(g_zo) % RB_CACHE_LINE) != 0 ||
         ((uintptr_t)zo_ring_b(g_zo) % RB_CACHE_LINE) != 0 ||
         ((uintptr_t)g_zo->scratch_a % RB_CACHE_LINE) != 0 ||
@@ -249,34 +279,60 @@ int main(int argc, char **argv)
     }
 
     const int n_samples = (int)(sizeof sample_json / sizeof sample_json[0]);
-    printf("publishing sample WS-JSON frames into ingress ring A for %.2fs "
-           "(%d unique samples, cycling)\n", seconds, n_samples);
+    printf("publishing sample WS-JSON into ring A for %.2fs "
+           "(%d unique samples, cycling; capacity=%u)\n",
+           seconds, n_samples, (unsigned)ZO_CAPACITY);
 
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     int published = 0;
+    int received = 0;
     int i = 0;
+    int full_timeouts = 0;
 
+    /* Continuous generate + drain for the whole duration. */
     while (elapsed_seconds(&start) < seconds) {
         const char *json = sample_json[i % n_samples];
-        uint32_t seq = ++g_zo->bell.seq_in;
-        if (publish_json(zo_ring_a(g_zo), json, seq) != 0)
+        uint32_t seq = g_zo->bell.seq_in + 1u;
+
+        int pr = publish_json(zo_ring_a(g_zo), json, seq, &start, seconds);
+        if (pr < 0)
             return 1;
+        if (pr == 1) {
+            /* Duration expired while waiting for a free slot, or still full. */
+            full_timeouts++;
+            /* Drain whatever is ready so the ring can free up. */
+            received += drain_available(zo_ring_b(g_zo));
+            if (elapsed_seconds(&start) >= seconds)
+                break;
+            sleep_us(100);
+            continue;
+        }
+
+        g_zo->bell.seq_in = seq;
         printf("CPU  published seq=%u len=%zu json=%s\n",
                seq, strlen(json), json);
         published++;
         i++;
-        /* Small pause so a slow stub can keep up during short runs. */
-        sleep_us(500);
+
+        /* Drain any results that arrived so far (keeps ring B empty). */
+        received += drain_available(zo_ring_b(g_zo));
     }
 
-    printf("publish window done (%d frames). waiting for FPGA results "
-           "on egress ring B …\n", published);
+    printf("publish window done (%d frames, %d full-waits). "
+           "draining remaining results …\n", published, full_timeouts);
 
-    /* Allow extra time after publish window for the stub to finish. */
-    int got = drain_results(zo_ring_b(g_zo), 0.5, &start, seconds + 5.0);
-    printf("done: published=%d received=%d\n", published, got);
+    received += drain_until_quiet(zo_ring_b(g_zo), 0.5, &start, seconds + 5.0);
+    printf("done: published=%d received=%d (%.2fs elapsed)\n",
+           published, received, elapsed_seconds(&start));
 
-    /* Leave shm in place so the stub can exit cleanly; user may rm it. */
-    return got > 0 ? 0 : 2;
+    if (published > 0 && received == 0) {
+        fprintf(stderr,
+                "no results received — is zynq_fpga_stub running?\n"
+                "  terminal 1: ./zynq_fpga_stub -t %.0f\n"
+                "  terminal 2: ./zynq_cpu_host  -t %.0f\n",
+                seconds + 10.0, seconds);
+        return 2;
+    }
+    return 0;
 }
