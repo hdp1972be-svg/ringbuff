@@ -12,6 +12,10 @@
  * Here a normal Linux process plays the same role so the example can
  * be tested without hardware.  The ownership protocol and the RB_HW_*
  * hooks are identical.
+ *
+ * Usage:
+ *   ./zynq_fpga_stub [-t <seconds>]
+ *   -t <seconds>  max runtime (default: run until ~2 s of idle)
  */
 #include "hw_port.h"
 #include "common.h"
@@ -23,9 +27,18 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 struct zo_shared *g_zo;
+
+static double elapsed_seconds(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - start->tv_sec) +
+           (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
 
 static struct zo_shared *map_shared(void)
 {
@@ -59,8 +72,21 @@ static int process_one(rb_t *in, rb_t *out)
     uint32_t h = zo_fast_hash(obj, len);
     uint32_t seq = ++g_zo->bell.seq_out;
 
-    printf("FPGA consumed ingress slot %u len=%u → hash=0x%08x seq=%u\n",
-           idx, len, h, seq);
+    /* Ingress payload is a NUL-terminated JSON string in this demo. */
+    printf("FPGA consumed ingress slot %u len=%u trunc=%d seq=%u hash=0x%08x\n",
+           idx, len, (int)trunc, seq, h);
+    if (len > 0) {
+        /* Print as text up to first NUL or len, whichever comes first. */
+        uint32_t plen = len;
+        const char *s = (const char *)obj;
+        for (uint32_t i = 0; i < len; i++) {
+            if (s[i] == '\0') {
+                plen = i;
+                break;
+            }
+        }
+        printf("FPGA json (%u B): %.*s\n", plen, (int)plen, s);
+    }
 
     /* Publish result into egress ring B. */
     uint32_t oidx = 0, ocap = 0;
@@ -98,9 +124,41 @@ static int process_one(rb_t *in, rb_t *out)
     return 1;
 }
 
-int main(void)
+static void usage(const char *prog)
 {
-    printf("zynq_offload fpga_stub — waiting for shared region\n");
+    fprintf(stderr,
+            "Usage: %s [-t <seconds>]\n"
+            "  -t <seconds>  max runtime (default: exit after ~2 s idle)\n",
+            prog);
+}
+
+int main(int argc, char **argv)
+{
+    double max_seconds = -1.0; /* <0 → idle-based exit only */
+    int c;
+    while ((c = getopt(argc, argv, "t:h")) != -1) {
+        switch (c) {
+        case 't': {
+            char *end = NULL;
+            max_seconds = strtod(optarg, &end);
+            if (!end || *end != '\0' || !(max_seconds > 0.0)) {
+                fprintf(stderr, "%s: invalid -t value '%s'\n", argv[0], optarg);
+                return 2;
+            }
+            break;
+        }
+        case 'h':
+        default:
+            usage(argv[0]);
+            return c == 'h' ? 0 : 2;
+        }
+    }
+
+    printf("zynq_offload fpga_stub — waiting for shared region");
+    if (max_seconds > 0.0)
+        printf(" (max %.2fs)", max_seconds);
+    printf("\n");
+
     g_zo = map_shared();
     if (!g_zo)
         return 1;
@@ -108,11 +166,19 @@ int main(void)
     rb_t *in  = zo_ring_a(g_zo);
     rb_t *out = zo_ring_b(g_zo);
 
-    printf("FPGA stub ready — processing until idle for a while\n");
+    printf("FPGA stub ready — processing until idle");
+    if (max_seconds > 0.0)
+        printf(" or %.2fs elapsed", max_seconds);
+    printf("\n");
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     int total = 0;
     int idle_rounds = 0;
     while (idle_rounds < 100) {          /* ~2 s of idle → exit */
+        if (max_seconds > 0.0 && elapsed_seconds(&start) >= max_seconds)
+            break;
         int n = process_one(in, out);
         if (n > 0) {
             total += n;
