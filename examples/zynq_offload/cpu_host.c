@@ -14,6 +14,8 @@
  *   ./zynq_cpu_host -t <seconds>
  *   -t <seconds>  how long to keep publishing (required, > 0)
  */
+#define _POSIX_C_SOURCE 200809L
+
 #include "hw_port.h"   /* installs RB_HW_* overrides */
 #include "common.h"
 
@@ -35,6 +37,15 @@ static double elapsed_seconds(const struct timespec *start)
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)(now.tv_sec - start->tv_sec) +
            (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
+
+static void sleep_us(unsigned us)
+{
+    struct timespec ts = {
+        .tv_sec  = (time_t)(us / 1000000u),
+        .tv_nsec = (long)((us % 1000000u) * 1000u),
+    };
+    nanosleep(&ts, NULL);
 }
 
 static struct zo_shared *map_shared(int create)
@@ -100,7 +111,7 @@ static int publish_json(rb_t *ring, const char *json, uint32_t seq)
         if (e == RB_OK)
             break;
         if (e == RB_ERR_FULL) {
-            usleep(100);
+            sleep_us(100);
             continue;
         }
         fprintf(stderr, "rb_acquire failed (%d)\n", (int)e);
@@ -119,7 +130,7 @@ static int publish_json(rb_t *ring, const char *json, uint32_t seq)
     return 0;
 }
 
-/* Drain egress results until quiet for quiet_ms, or overall deadline. */
+/* Drain egress results until quiet for quiet_s, or overall deadline. */
 static int drain_results(rb_t *ring, double quiet_s, const struct timespec *deadline_start,
                          double deadline_s)
 {
@@ -143,7 +154,7 @@ static int drain_results(rb_t *ring, double quiet_s, const struct timespec *dead
             }
             if (have_hit && elapsed_seconds(&last_hit) >= quiet_s)
                 break;
-            usleep(200);
+            sleep_us(200);
             continue;
         }
 
@@ -256,7 +267,7 @@ int main(int argc, char **argv)
         published++;
         i++;
         /* Small pause so a slow stub can keep up during short runs. */
-        usleep(500);
+        sleep_us(500);
     }
 
     printf("publish window done (%d frames). waiting for FPGA results "

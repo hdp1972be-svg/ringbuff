@@ -17,6 +17,8 @@
  *   ./zynq_fpga_stub [-t <seconds>]
  *   -t <seconds>  max runtime (default: run until ~2 s of idle)
  */
+#define _POSIX_C_SOURCE 200809L
+
 #include "hw_port.h"
 #include "common.h"
 
@@ -40,6 +42,15 @@ static double elapsed_seconds(const struct timespec *start)
            (double)(now.tv_nsec - start->tv_nsec) / 1e9;
 }
 
+static void sleep_us(unsigned us)
+{
+    struct timespec ts = {
+        .tv_sec  = (time_t)(us / 1000000u),
+        .tv_nsec = (long)((us % 1000000u) * 1000u),
+    };
+    nanosleep(&ts, NULL);
+}
+
 static struct zo_shared *map_shared(void)
 {
     /* Wait until cpu_host has created the segment. */
@@ -52,7 +63,7 @@ static struct zo_shared *map_shared(void)
             if (p != MAP_FAILED)
                 return (struct zo_shared *)p;
         }
-        usleep(100000);
+        sleep_us(100000);
     }
     fprintf(stderr, "fpga_stub: timed out waiting for %s\n", ZO_SHM_NAME);
     return NULL;
@@ -96,7 +107,7 @@ static int process_one(rb_t *in, rb_t *out)
         if (e == RB_OK)
             break;
         if (e == RB_ERR_FULL) {
-            usleep(50);
+            sleep_us(50);
             continue;
         }
         fprintf(stderr, "FPGA rb_acquire(egress) failed\n");
@@ -186,7 +197,7 @@ int main(int argc, char **argv)
             g_zo->bell.cpu_to_fpga = 0; /* clear doorbell */
         } else if (n == 0) {
             idle_rounds++;
-            usleep(20000);
+            sleep_us(20000);
         } else {
             return 2;
         }
