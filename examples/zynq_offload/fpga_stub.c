@@ -13,16 +13,11 @@
  * be tested without hardware.  The ownership protocol and the RB_HW_*
  * hooks are identical.
  *
- * Prints:
+ * Quiet by default (end-of-run stats only).  Pass -v for:
  *   [FPGA R] green  — ingress JSON + local receive ts + latency delta
  *   [FPGA W] red    — egress result (hash, payload echo, ts_fpga)
  *   [FPGA  ]        — periodic rate (pkt/s) and queue depths
  *   ---             — packet separator
- *
- * Usage:
- *   ./zynq_fpga_stub [-t <seconds>]
- *   -t <seconds>  run for this wall-clock duration (recommended)
- *                 without -t: exit after ~2 s of idle ingress
  *
  * Typical pair:
  *   terminal 1: ./zynq_fpga_stub -t 70
@@ -44,6 +39,7 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
+static int g_verbose; /* -v: per-packet + periodic rate prints */
 
 static void sleep_us(unsigned us)
 {
@@ -138,14 +134,11 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
 
     /* RB_HW_INVALIDATE_SLOT already ran inside rb_consume. */
 
-    uint64_t ts_local = zo_now_ns();
-
     /* Treat payload as C string when possible. */
     char json_copy[ZO_SLOT_SIZE];
     uint32_t copy_len = len < sizeof json_copy ? len : (uint32_t)sizeof json_copy - 1u;
     memcpy(json_copy, obj, copy_len);
     json_copy[copy_len] = '\0';
-    /* Strip trailing NULs for display length. */
     uint32_t plen = (uint32_t)strlen(json_copy);
 
     uint64_t ts_in = 0;
@@ -155,20 +148,23 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
     (void)parse_u32_field(json_copy, "seq", &seq_in);
     (void)parse_str_field(json_copy, "payload", payload, sizeof payload);
 
-    int64_t delta_ns = ts_in ? (int64_t)ts_local - (int64_t)ts_in : 0;
+    if (g_verbose) {
+        uint64_t ts_local = zo_now_ns();
+        int64_t delta_ns = ts_in ? (int64_t)ts_local - (int64_t)ts_in : 0;
 
-    printf(ZO_CLR_GREEN
-           "[FPGA R] seq=%u len=%u trunc=%d\n"
-           "[FPGA R] msg=%.*s\n"
-           "[FPGA R] payload=\"%s\"\n"
-           "[FPGA R] ts_in=%llu ts_local=%llu delta_ns=%lld\n"
-           ZO_CLR_RESET,
-           seq_in, len, (int)trunc,
-           (int)plen, json_copy,
-           payload,
-           (unsigned long long)ts_in,
-           (unsigned long long)ts_local,
-           (long long)delta_ns);
+        printf(ZO_CLR_GREEN
+               "[FPGA R] seq=%u len=%u trunc=%d\n"
+               "[FPGA R] msg=%.*s\n"
+               "[FPGA R] payload=\"%s\"\n"
+               "[FPGA R] ts_in=%llu ts_local=%llu delta_ns=%lld\n"
+               ZO_CLR_RESET,
+               seq_in, len, (int)trunc,
+               (int)plen, json_copy,
+               payload,
+               (unsigned long long)ts_in,
+               (unsigned long long)ts_local,
+               (long long)delta_ns);
+    }
 
     /* Process: hash the whole ingress blob (stand-in for PL work). */
     uint32_t h = zo_fast_hash(obj, len);
@@ -228,16 +224,18 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
      * Also raise the CPU-visible doorbell (stand-in for IRQ). */
     g_zo->bell.fpga_to_cpu = 1u;
 
-    printf(ZO_CLR_RED
-           "[FPGA W] seq=%u hash=0x%08x in_len=%u tag=%.4s\n"
-           "[FPGA W] payload=\"%.60s\"\n"
-           "[FPGA W] ts_in=%llu ts_fpga=%llu\n"
-           ZO_CLR_RESET,
-           r->seq, r->hash, r->in_len, r->tag,
-           r->payload,
-           (unsigned long long)r->ts_in,
-           (unsigned long long)r->ts_fpga);
-    zo_print_sep();
+    if (g_verbose) {
+        printf(ZO_CLR_RED
+               "[FPGA W] seq=%u hash=0x%08x in_len=%u tag=%.4s\n"
+               "[FPGA W] payload=\"%.60s\"\n"
+               "[FPGA W] ts_in=%llu ts_fpga=%llu\n"
+               ZO_CLR_RESET,
+               r->seq, r->hash, r->in_len, r->tag,
+               r->payload,
+               (unsigned long long)r->ts_in,
+               (unsigned long long)r->ts_fpga);
+        zo_print_sep();
+    }
 
     rb_release(in, idx);
     return 1;
@@ -246,19 +244,37 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s [-t <seconds>]\n"
-            "  -t <seconds>  wall-clock runtime (recommended for continuous runs)\n"
-            "                without -t: exit after ~2 s of idle ingress\n"
+            "Usage: %s [-t <seconds>] [-v] [-h]\n"
             "\n"
-            "Pair with: ./zynq_cpu_host -t <seconds>\n",
-            prog);
+            "What this program does\n"
+            "  Userspace model of the FPGA (PL) path in the dual-ring Zynq\n"
+            "  offload demo.  Consumes JSON frames from ingress ring A, runs a\n"
+            "  stand-in transform (FNV hash), and publishes results to egress\n"
+            "  ring B.  On real hardware this loop lives in the PL; here a\n"
+            "  normal process exercises the same ownership and RB_HW_* hooks.\n"
+            "\n"
+            "  Pair with ./zynq_cpu_host.  Shared memory: %s\n"
+            "\n"
+            "Options\n"
+            "  -t <seconds>  wall-clock runtime (recommended).  Without -t,\n"
+            "                exit after ~2 s of idle ingress.\n"
+            "  -v            verbose: per-packet [FPGA R]/[FPGA W] dumps and\n"
+            "                periodic rate lines (~1 s).  Default is quiet:\n"
+            "                only a final stats summary is printed.\n"
+            "  -h            show this help and exit\n"
+            "\n"
+            "Example\n"
+            "  terminal 1: ./zynq_fpga_stub -t 70\n"
+            "  terminal 2: ./zynq_cpu_host  -t 60\n"
+            "  (add -v on either side to watch individual packets)\n",
+            prog, ZO_SHM_NAME);
 }
 
 int main(int argc, char **argv)
 {
     double max_seconds = -1.0; /* <0 → idle-based exit only */
     int c;
-    while ((c = getopt(argc, argv, "t:h")) != -1) {
+    while ((c = getopt(argc, argv, "t:vh")) != -1) {
         switch (c) {
         case 't': {
             char *end = NULL;
@@ -269,18 +285,24 @@ int main(int argc, char **argv)
             }
             break;
         }
+        case 'v':
+            g_verbose = 1;
+            break;
         case 'h':
+            usage(argv[0]);
+            return 0;
         default:
             usage(argv[0]);
-            return c == 'h' ? 0 : 2;
+            return 2;
         }
     }
 
-    printf("zynq_offload fpga_stub — waiting for shared region");
+    printf("zynq_offload fpga_stub — verbose=%s",
+           g_verbose ? "on" : "off (stats at end only)");
     if (max_seconds > 0.0)
-        printf(" (run for %.2fs)", max_seconds);
+        printf("  duration=%.2fs", max_seconds);
     else
-        printf(" (idle-exit after ~2s)");
+        printf("  (idle-exit after ~2s)");
     printf("\n");
 
     g_zo = map_shared();
@@ -290,10 +312,12 @@ int main(int argc, char **argv)
     rb_t *in  = zo_ring_a(g_zo);
     rb_t *out = zo_ring_b(g_zo);
 
-    printf("FPGA stub ready — processing continuously");
-    if (max_seconds > 0.0)
-        printf(" for %.2fs", max_seconds);
-    printf("\n");
+    if (g_verbose) {
+        printf("FPGA stub ready — processing continuously");
+        if (max_seconds > 0.0)
+            printf(" for %.2fs", max_seconds);
+        printf("\n");
+    }
 
     double t0 = zo_now_sec();
     double t_last_report = t0;
@@ -325,23 +349,26 @@ int main(int argc, char **argv)
             return 2;
         }
 
-        /* Periodic rate report (every ~1 s), same style as the host. */
-        now = zo_now_sec();
-        if (now - t_last_report >= 1.0) {
-            double elapsed = now - t0;
-            double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
-            printf("[FPGA  ] rate=%.0f pkt/s  processed=%llu  "
-                   "queue_A=%u/%u  queue_B=%u/%u\n",
-                   rate,
-                   (unsigned long long)total,
-                   rb_count(in), rb_limit(in),
-                   rb_count(out), rb_limit(out));
-            t_last_report = now;
+        /* Periodic rate report only in verbose mode. */
+        if (g_verbose) {
+            now = zo_now_sec();
+            if (now - t_last_report >= 1.0) {
+                double elapsed = now - t0;
+                double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
+                printf("[FPGA  ] rate=%.0f pkt/s  processed=%llu  "
+                       "queue_A=%u/%u  queue_B=%u/%u\n",
+                       rate,
+                       (unsigned long long)total,
+                       rb_count(in), rb_limit(in),
+                       rb_count(out), rb_limit(out));
+                t_last_report = now;
+            }
         }
     }
 
     double elapsed = zo_now_sec() - t0;
     double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
+    /* Final stats always printed. */
     printf("FPGA stub done: processed=%llu  rate=%.0f pkt/s  (%.2fs elapsed)\n",
            (unsigned long long)total, rate, elapsed);
     return 0;
