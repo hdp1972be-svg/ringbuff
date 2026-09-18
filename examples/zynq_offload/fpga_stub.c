@@ -16,6 +16,7 @@
  * Prints:
  *   [FPGA R] green  — ingress JSON + local receive ts + latency delta
  *   [FPGA W] red    — egress result (hash, payload echo, ts_fpga)
+ *   [FPGA  ]        — periodic rate (pkt/s) and queue depths
  *   ---             — packet separator
  *
  * Usage:
@@ -289,13 +290,15 @@ int main(int argc, char **argv)
     printf("\n");
 
     double t0 = zo_now_sec();
+    double t_last_report = t0;
 
-    int total = 0;
+    uint64_t total = 0;
     int idle_rounds = 0;
     const int idle_limit = 100; /* ~2 s only used when no -t */
 
     for (;;) {
-        if (max_seconds > 0.0 && (zo_now_sec() - t0) >= max_seconds)
+        double now = zo_now_sec();
+        if (max_seconds > 0.0 && (now - t0) >= max_seconds)
             break;
 
         int n = process_one(in, out, max_seconds, t0);
@@ -315,9 +318,25 @@ int main(int argc, char **argv)
         } else {
             return 2;
         }
+
+        /* Periodic rate report (every ~1 s), same style as the host. */
+        now = zo_now_sec();
+        if (now - t_last_report >= 1.0) {
+            double elapsed = now - t0;
+            double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
+            printf("[FPGA  ] rate=%.0f pkt/s  processed=%llu  "
+                   "queue_A=%u/%u  queue_B=%u/%u\n",
+                   rate,
+                   (unsigned long long)total,
+                   rb_count(in), rb_limit(in),
+                   rb_count(out), rb_limit(out));
+            t_last_report = now;
+        }
     }
 
-    printf("FPGA stub done, processed %d frames (%.2fs elapsed)\n",
-           total, zo_now_sec() - t0);
+    double elapsed = zo_now_sec() - t0;
+    double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
+    printf("FPGA stub done: processed=%llu  rate=%.0f pkt/s  (%.2fs elapsed)\n",
+           (unsigned long long)total, rate, elapsed);
     return 0;
 }
