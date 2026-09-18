@@ -2,26 +2,13 @@
 /*
  * Software model of the FPGA side.
  *
- * On a real Zynq-7000 / Antminer S9 this logic lives in the PL:
- *   - AXI master reads slots from the ingress scratchpad,
- *   - computes hash / encrypt / zip,
- *   - writes results into the egress scratchpad,
- *   - advances the two rings (or asks a tiny soft-core / IRQ handler
- *     to call rb_release / rb_publish on its behalf).
- *
- * Here a normal Linux process plays the same role so the example can
- * be tested without hardware.  The ownership protocol and the RB_HW_*
- * hooks are identical.
- *
- * Quiet by default (end-of-run stats only).  Pass -v for:
- *   [FPGA R] green  — ingress JSON + local receive ts + latency delta
- *   [FPGA W] red    — egress result (hash, payload echo, ts_fpga)
- *   [FPGA  ]        — periodic rate (pkt/s) and queue depths
- *   ---             — packet separator
+ * Quiet by default (end-of-run stats only).  Pass -v for packet dumps.
+ * Ring capacity is chosen by the host (-s) at rb_init; this process
+ * waits for bell.ready and uses the already-initialized rings.
  *
  * Typical pair:
  *   terminal 1: ./zynq_fpga_stub -t 70
- *   terminal 2: ./zynq_cpu_host  -t 60
+ *   terminal 2: ./zynq_cpu_host  -t 60 -s 256
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -39,7 +26,7 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
-static int g_verbose; /* -v: per-packet + periodic rate prints */
+static int g_verbose;
 
 static void sleep_us(unsigned us)
 {
@@ -52,7 +39,6 @@ static void sleep_us(unsigned us)
 
 static struct zo_shared *map_shared(void)
 {
-    /* Wait until cpu_host has created the segment. */
     for (int i = 0; i < 50; i++) {
         int fd = shm_open(ZO_SHM_NAME, O_RDWR, 0666);
         if (fd >= 0) {
@@ -68,12 +54,23 @@ static struct zo_shared *map_shared(void)
     return NULL;
 }
 
-/*
- * Minimal JSON field extractors for the fixed shape
- *   {"ts":N,"seq":N,"payload":"..."}
- * Not a general parser — good enough for the demo path.
- * Future protobuf/avro path replaces these helpers entirely.
- */
+/* Wait until host has finished rb_init (bell.ready == 1). */
+static int wait_ready(struct zo_shared *s, double timeout_s)
+{
+    double t0 = zo_now_sec();
+    while (!s->bell.ready) {
+        if (zo_now_sec() - t0 >= timeout_s) {
+            fprintf(stderr, "fpga_stub: timed out waiting for host rb_init\n");
+            return -1;
+        }
+        sleep_us(10000);
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ volatile("" ::: "memory");
+#endif
+    return 0;
+}
+
 static int parse_u64_field(const char *json, const char *key, uint64_t *out)
 {
     char pat[32];
@@ -115,14 +112,6 @@ static int parse_str_field(const char *json, const char *key,
     return 0;
 }
 
-/*
- * Process one ingress frame.
- * Returns:
- *   1  processed
- *   0  ingress empty
- *  -1  hard error
- *   2  timed out waiting for egress space (CPU not draining)
- */
 static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
 {
     uint32_t idx = 0, len = 0;
@@ -130,11 +119,8 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
     bool trunc = false;
 
     if (rb_consume(in, &idx, &obj, &len, &trunc) != RB_OK)
-        return 0; /* empty */
+        return 0;
 
-    /* RB_HW_INVALIDATE_SLOT already ran inside rb_consume. */
-
-    /* Treat payload as C string when possible. */
     char json_copy[ZO_SLOT_SIZE];
     uint32_t copy_len = len < sizeof json_copy ? len : (uint32_t)sizeof json_copy - 1u;
     memcpy(json_copy, obj, copy_len);
@@ -166,12 +152,10 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
                (long long)delta_ns);
     }
 
-    /* Process: hash the whole ingress blob (stand-in for PL work). */
     uint32_t h = zo_fast_hash(obj, len);
     uint32_t seq_out = ++g_zo->bell.seq_out;
     uint64_t ts_fpga = zo_now_ns();
 
-    /* Publish result into egress ring B — must not block forever. */
     uint32_t oidx = 0, ocap = 0;
     void *w = NULL;
     int full_spins = 0;
@@ -220,8 +204,6 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
         rb_release(in, idx);
         return -1;
     }
-    /* RB_HW_FLUSH_SLOT + RB_HW_NOTIFY_DEVICE already ran.
-     * Also raise the CPU-visible doorbell (stand-in for IRQ). */
     g_zo->bell.fpga_to_cpu = 1u;
 
     if (g_verbose) {
@@ -247,32 +229,29 @@ static void usage(const char *prog)
             "Usage: %s [-t <seconds>] [-v] [-h]\n"
             "\n"
             "What this program does\n"
-            "  Userspace model of the FPGA (PL) path in the dual-ring Zynq\n"
-            "  offload demo.  Consumes JSON frames from ingress ring A, runs a\n"
-            "  stand-in transform (FNV hash), and publishes results to egress\n"
-            "  ring B.  On real hardware this loop lives in the PL; here a\n"
-            "  normal process exercises the same ownership and RB_HW_* hooks.\n"
+            "  Userspace model of the FPGA (PL) path.  Consumes JSON from\n"
+            "  ingress ring A, hashes the payload, publishes to egress ring B.\n"
+            "  Ring capacity is set by the host (-s) at rb_init; this process\n"
+            "  waits for the shared header ready flag and uses those rings.\n"
             "\n"
             "  Pair with ./zynq_cpu_host.  Shared memory: %s\n"
             "\n"
             "Options\n"
             "  -t <seconds>  wall-clock runtime (recommended).  Without -t,\n"
             "                exit after ~2 s of idle ingress.\n"
-            "  -v            verbose: per-packet [FPGA R]/[FPGA W] dumps and\n"
-            "                periodic rate lines (~1 s).  Default is quiet:\n"
-            "                only a final stats summary is printed.\n"
+            "  -v            verbose: per-packet dumps + periodic rate lines.\n"
+            "                Default is quiet (final stats only).\n"
             "  -h            show this help and exit\n"
             "\n"
             "Example\n"
             "  terminal 1: ./zynq_fpga_stub -t 70\n"
-            "  terminal 2: ./zynq_cpu_host  -t 60\n"
-            "  (add -v on either side to watch individual packets)\n",
+            "  terminal 2: ./zynq_cpu_host  -t 60 -s 256\n",
             prog, ZO_SHM_NAME);
 }
 
 int main(int argc, char **argv)
 {
-    double max_seconds = -1.0; /* <0 → idle-based exit only */
+    double max_seconds = -1.0;
     int c;
     while ((c = getopt(argc, argv, "t:vh")) != -1) {
         switch (c) {
@@ -309,22 +288,25 @@ int main(int argc, char **argv)
     if (!g_zo)
         return 1;
 
+    if (wait_ready(g_zo, 30.0) != 0)
+        return 1;
+
+    uint32_t slots = g_zo->bell.slots;
+    if (slots < 1u || slots > ZO_MAX_SLOTS) {
+        fprintf(stderr, "fpga_stub: bad slots in shared header (%u)\n", slots);
+        return 1;
+    }
+    printf("FPGA stub: host rings ready (slots=%u)\n", slots);
+
     rb_t *in  = zo_ring_a(g_zo);
     rb_t *out = zo_ring_b(g_zo);
-
-    if (g_verbose) {
-        printf("FPGA stub ready — processing continuously");
-        if (max_seconds > 0.0)
-            printf(" for %.2fs", max_seconds);
-        printf("\n");
-    }
 
     double t0 = zo_now_sec();
     double t_last_report = t0;
 
     uint64_t total = 0;
     int idle_rounds = 0;
-    const int idle_limit = 100; /* ~2 s only used when no -t */
+    const int idle_limit = 100;
 
     for (;;) {
         double now = zo_now_sec();
@@ -335,21 +317,18 @@ int main(int argc, char **argv)
         if (n == 1) {
             total += 1;
             idle_rounds = 0;
-            g_zo->bell.cpu_to_fpga = 0; /* clear doorbell */
+            g_zo->bell.cpu_to_fpga = 0;
         } else if (n == 0) {
             idle_rounds++;
-            /* Only exit on idle when the user did not pass -t. */
             if (max_seconds < 0.0 && idle_rounds >= idle_limit)
                 break;
             sleep_us(20000);
         } else if (n == 2) {
-            /* Duration expired while blocked on egress — normal end. */
             break;
         } else {
             return 2;
         }
 
-        /* Periodic rate report only in verbose mode. */
         if (g_verbose) {
             now = zo_now_sec();
             if (now - t_last_report >= 1.0) {
@@ -368,8 +347,7 @@ int main(int argc, char **argv)
 
     double elapsed = zo_now_sec() - t0;
     double rate = elapsed > 0.0 ? (double)total / elapsed : 0.0;
-    /* Final stats always printed. */
-    printf("FPGA stub done: processed=%llu  rate=%.0f pkt/s  (%.2fs elapsed)\n",
-           (unsigned long long)total, rate, elapsed);
+    printf("FPGA stub done: processed=%llu  rate=%.0f pkt/s  slots=%u  (%.2fs elapsed)\n",
+           (unsigned long long)total, rate, slots, elapsed);
     return 0;
 }
