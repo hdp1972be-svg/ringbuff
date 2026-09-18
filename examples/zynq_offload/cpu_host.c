@@ -10,6 +10,8 @@
  * JSON shape (stand-in for a future protobuf / Avro encoding):
  *   {"ts":<ns>,"seq":<uint32>,"payload":"..."}
  *
+ * Quiet by default (end-of-run stats only).  Pass -v for per-packet dumps.
+ *
  * Typical pair:
  *   terminal 1: ./zynq_fpga_stub -t 70
  *   terminal 2: ./zynq_cpu_host  -t 60
@@ -17,10 +19,6 @@
  * On a real Antminer S9 replace the shm_open path with mmap of the
  * reserved DDR/BRAM window and feed real socket data into the publish
  * loop.
- *
- * Usage:
- *   ./zynq_cpu_host -t <seconds>
- *   -t <seconds>  how long to keep publishing (required, > 0)
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -38,6 +36,7 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
+static int g_verbose; /* -v: per-packet + periodic rate prints */
 
 static void sleep_us(unsigned us)
 {
@@ -164,30 +163,31 @@ static int drain_available(rb_t *ring)
             break;
         }
 
-        uint64_t ts_recv = zo_now_ns();
-
         if (len < sizeof(struct zo_result)) {
             fprintf(stderr, "short result len=%u\n", len);
             rb_release(ring, idx);
             continue;
         }
 
-        const struct zo_result *r = (const struct zo_result *)obj;
-        int64_t delta_ns = (int64_t)ts_recv - (int64_t)r->ts_in;
+        if (g_verbose) {
+            uint64_t ts_recv = zo_now_ns();
+            const struct zo_result *r = (const struct zo_result *)obj;
+            int64_t delta_ns = (int64_t)ts_recv - (int64_t)r->ts_in;
 
-        printf(ZO_CLR_GREEN
-               "[Host R] seq=%u hash=0x%08x in_len=%u tag=%.4s%s\n"
-               "[Host R] payload=\"%.60s\"\n"
-               "[Host R] ts_in=%llu ts_fpga=%llu ts_recv=%llu delta_ns=%lld\n"
-               ZO_CLR_RESET,
-               r->seq, r->hash, r->in_len, r->tag,
-               trunc ? " (trunc)" : "",
-               r->payload,
-               (unsigned long long)r->ts_in,
-               (unsigned long long)r->ts_fpga,
-               (unsigned long long)ts_recv,
-               (long long)delta_ns);
-        zo_print_sep();
+            printf(ZO_CLR_GREEN
+                   "[Host R] seq=%u hash=0x%08x in_len=%u tag=%.4s%s\n"
+                   "[Host R] payload=\"%.60s\"\n"
+                   "[Host R] ts_in=%llu ts_fpga=%llu ts_recv=%llu delta_ns=%lld\n"
+                   ZO_CLR_RESET,
+                   r->seq, r->hash, r->in_len, r->tag,
+                   trunc ? " (trunc)" : "",
+                   r->payload,
+                   (unsigned long long)r->ts_in,
+                   (unsigned long long)r->ts_fpga,
+                   (unsigned long long)ts_recv,
+                   (long long)delta_ns);
+            zo_print_sep();
+        }
 
         rb_release(ring, idx);
         got++;
@@ -224,21 +224,37 @@ static int drain_until_quiet(rb_t *ring, double quiet_s, double deadline)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s -t <seconds>\n"
-            "  -t <seconds>  publish duration (required, > 0)\n"
+            "Usage: %s -t <seconds> [-v] [-h]\n"
             "\n"
-            "Continuously generates JSON {ts,seq,payload} into ring A at full\n"
-            "speed for the given duration.  Full ring → drop (counted).\n"
-            "Drains results from ring B with latency deltas.\n"
-            "Start ./zynq_fpga_stub in another terminal first (or in parallel).\n",
-            prog);
+            "What this program does\n"
+            "  CPU (PS) side of the dual-ring Zynq offload demo. Continuously\n"
+            "  generates JSON frames {ts,seq,payload} at full speed into ingress\n"
+            "  ring A for -t seconds.  When the ring is full the packet is\n"
+            "  dropped (counted) — the writer never blocks.  Concurrently drains\n"
+            "  hashed results from egress ring B.\n"
+            "\n"
+            "  Pair with ./zynq_fpga_stub in another terminal (start the stub\n"
+            "  first, or in parallel).  Shared memory: %s\n"
+            "\n"
+            "Options\n"
+            "  -t <seconds>  publish duration (required, must be > 0)\n"
+            "  -v            verbose: per-packet [Host W]/[Host R] dumps and\n"
+            "                periodic rate lines (~1 s).  Default is quiet:\n"
+            "                only a final stats summary is printed.\n"
+            "  -h            show this help and exit\n"
+            "\n"
+            "Example\n"
+            "  terminal 1: ./zynq_fpga_stub -t 70\n"
+            "  terminal 2: ./zynq_cpu_host  -t 60\n"
+            "  (add -v on either side to watch individual packets)\n",
+            prog, ZO_SHM_NAME);
 }
 
 int main(int argc, char **argv)
 {
     double seconds = -1.0;
     int c;
-    while ((c = getopt(argc, argv, "t:h")) != -1) {
+    while ((c = getopt(argc, argv, "t:vh")) != -1) {
         switch (c) {
         case 't': {
             char *end = NULL;
@@ -249,10 +265,15 @@ int main(int argc, char **argv)
             }
             break;
         }
+        case 'v':
+            g_verbose = 1;
+            break;
         case 'h':
+            usage(argv[0]);
+            return 0;
         default:
             usage(argv[0]);
-            return c == 'h' ? 0 : 2;
+            return 2;
         }
     }
     if (!(seconds > 0.0)) {
@@ -260,8 +281,8 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    printf("zynq_offload cpu_host — creating shared region (duration=%.2fs)\n",
-           seconds);
+    printf("zynq_offload cpu_host — duration=%.2fs verbose=%s\n",
+           seconds, g_verbose ? "on" : "off (stats at end only)");
     printf("hint: start ./zynq_fpga_stub [-t %.0f] in another terminal\n",
            seconds + 10.0);
 
@@ -284,9 +305,11 @@ int main(int argc, char **argv)
     }
 
     const int n_payloads = (int)(sizeof sample_payloads / sizeof sample_payloads[0]);
-    printf("publishing JSON {ts,seq,payload} into ring A for %.2fs "
-           "at full speed (capacity=%u, drop on full)\n",
-           seconds, (unsigned)ZO_CAPACITY);
+    if (g_verbose) {
+        printf("publishing JSON {ts,seq,payload} into ring A for %.2fs "
+               "at full speed (capacity=%u, drop on full)\n",
+               seconds, (unsigned)ZO_CAPACITY);
+    }
 
     double t0 = zo_now_sec();
     double t_end = t0 + seconds;
@@ -325,29 +348,33 @@ int main(int argc, char **argv)
             g_zo->bell.seq_in = this_seq;
             published++;
 
-            printf(ZO_CLR_RED
-                   "[Host W] seq=%u ts=%llu len=%d\n"
-                   "[Host W] %s\n"
-                   ZO_CLR_RESET,
-                   this_seq, (unsigned long long)ts, jlen - 1, json_buf);
-            zo_print_sep();
+            if (g_verbose) {
+                printf(ZO_CLR_RED
+                       "[Host W] seq=%u ts=%llu len=%d\n"
+                       "[Host W] %s\n"
+                       ZO_CLR_RESET,
+                       this_seq, (unsigned long long)ts, jlen - 1, json_buf);
+                zo_print_sep();
+            }
 
             received += (uint64_t)drain_available(zo_ring_b(g_zo));
         }
 
-        /* Periodic rate / drop report (every ~1 s). */
-        double now = zo_now_sec();
-        if (now - t_last_report >= 1.0) {
-            double elapsed = now - t0;
-            double rate = elapsed > 0.0 ? (double)published / elapsed : 0.0;
-            printf("[Host  ] rate=%.0f pkt/s  published=%llu  dropped=%llu  "
-                   "received=%llu  queue_A=%u/%u\n",
-                   rate,
-                   (unsigned long long)published,
-                   (unsigned long long)dropped,
-                   (unsigned long long)received,
-                   rb_count(zo_ring_a(g_zo)), rb_limit(zo_ring_a(g_zo)));
-            t_last_report = now;
+        /* Periodic rate / drop report only in verbose mode. */
+        if (g_verbose) {
+            double now = zo_now_sec();
+            if (now - t_last_report >= 1.0) {
+                double elapsed = now - t0;
+                double rate = elapsed > 0.0 ? (double)published / elapsed : 0.0;
+                printf("[Host  ] rate=%.0f pkt/s  published=%llu  dropped=%llu  "
+                       "received=%llu  queue_A=%u/%u\n",
+                       rate,
+                       (unsigned long long)published,
+                       (unsigned long long)dropped,
+                       (unsigned long long)received,
+                       rb_count(zo_ring_a(g_zo)), rb_limit(zo_ring_a(g_zo)));
+                t_last_report = now;
+            }
         }
     }
 
@@ -355,14 +382,17 @@ int main(int argc, char **argv)
     double elapsed = t_done - t0;
     double rate = elapsed > 0.0 ? (double)published / elapsed : 0.0;
 
-    printf("publish window done: published=%llu dropped=%llu rate=%.0f pkt/s\n"
-           "draining remaining results …\n",
-           (unsigned long long)published,
-           (unsigned long long)dropped,
-           rate);
+    if (g_verbose) {
+        printf("publish window done: published=%llu dropped=%llu rate=%.0f pkt/s\n"
+               "draining remaining results …\n",
+               (unsigned long long)published,
+               (unsigned long long)dropped,
+               rate);
+    }
 
     received += (uint64_t)drain_until_quiet(zo_ring_b(g_zo), 0.5, t_done + 5.0);
 
+    /* Final stats always printed. */
     printf("done: published=%llu dropped=%llu received=%llu "
            "rate=%.0f pkt/s (%.2fs elapsed)\n",
            (unsigned long long)published,
