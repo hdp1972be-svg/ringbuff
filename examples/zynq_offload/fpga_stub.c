@@ -210,7 +210,13 @@ static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
     r->ts_in   = ts_in;
     r->ts_fpga = ts_fpga;
     memcpy(r->tag, "HASH", 4);
-    strncpy(r->payload, payload, sizeof r->payload - 1u);
+    {
+        size_t n = strlen(payload);
+        if (n >= sizeof r->payload)
+            n = sizeof r->payload - 1u;
+        memcpy(r->payload, payload, n);
+        r->payload[n] = 0;
+    }
 
     if (rb_publish(out, oidx, (uint32_t)sizeof *r) != RB_OK) {
         fprintf(stderr, "FPGA rb_publish(egress) failed\n");
