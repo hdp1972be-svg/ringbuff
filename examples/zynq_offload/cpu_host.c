@@ -2,11 +2,15 @@
 /*
  * CPU side of the Zynq dual-ring offload example.
  *
- * Simulates "NIC / WebSocket JSON arrived" by publishing JSON frames
- * into ring A for a configurable duration, while draining hashed
- * results from ring B as they arrive.
+ * Continuously generates JSON frames at the fastest rate possible for
+ * -t <seconds>, publishes them into ingress ring A, and drains hashed
+ * results from egress ring B.  When the ingress ring is full the packet
+ * is dropped (counted) so the writer never blocks.
  *
- * Requires the FPGA side to be running in parallel:
+ * JSON shape (stand-in for a future protobuf / Avro encoding):
+ *   {"ts":<ns>,"seq":<uint32>,"payload":"..."}
+ *
+ * Typical pair:
  *   terminal 1: ./zynq_fpga_stub -t 70
  *   terminal 2: ./zynq_cpu_host  -t 60
  *
@@ -34,14 +38,6 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
-
-static double elapsed_seconds(const struct timespec *start)
-{
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)(now.tv_sec - start->tv_sec) +
-           (double)(now.tv_nsec - start->tv_nsec) / 1e9;
-}
 
 static void sleep_us(unsigned us)
 {
@@ -95,51 +91,57 @@ static int init_rings(struct zo_shared *s)
     return 0;
 }
 
-/* Fake "WebSocket JSON from the NIC". */
-static const char *sample_json[] = {
-    "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"rig/1\"]}",
-    "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"user\",\"x\"]}",
-    "{\"id\":3,\"method\":\"mining.submit\",\"params\":[\"user\",\"job\",\"0000\"]}",
-    "{\"id\":4,\"result\":true,\"error\":null}",
-    "{\"id\":5,\"method\":\"mining.notify\",\"params\":[\"job\",\"prev\",\"cb\"]}",
+/* Sample payload strings cycled into the JSON "payload" field. */
+static const char *sample_payloads[] = {
+    "mining.subscribe",
+    "mining.authorize",
+    "mining.submit",
+    "mining.notify",
+    "heartbeat",
 };
 
 /*
- * Try to publish one JSON.  Returns:
- *   0  success
- *  -1  hard error
- *   1  timed out waiting for free slot (duration expired / backpressure)
+ * Build one ingress JSON into buf.
+ * Returns length including trailing NUL, or -1 on overflow.
  *
- * While the ring is full we keep polling the deadline so -t is respected
- * even if the FPGA side is slow or missing.
+ * Future: replace this helper with protobuf / Avro encode; the ring
+ * publish path stays the same.
  */
-static int publish_json(rb_t *ring, const char *json, uint32_t seq,
-                        const struct timespec *start, double seconds)
+static int build_json(char *buf, size_t bufsz, uint64_t ts, uint32_t seq,
+                      const char *payload)
+{
+    int n = snprintf(buf, bufsz,
+                     "{\"ts\":%llu,\"seq\":%u,\"payload\":\"%s\"}",
+                     (unsigned long long)ts, seq, payload);
+    if (n < 0 || (size_t)n + 1u > bufsz)
+        return -1;
+    return n + 1; /* include NUL so consumer can treat as C string */
+}
+
+/*
+ * Try to publish one JSON at full speed.
+ * Returns:
+ *   0  published
+ *   1  dropped (ring full)
+ *  -1  hard error
+ */
+static int try_publish(rb_t *ring, const char *json, uint32_t len)
 {
     uint32_t idx = 0, cap = 0;
     void *w = NULL;
-    uint32_t want = (uint32_t)strlen(json) + 1u; /* include NUL for demo */
 
-    for (;;) {
-        if (elapsed_seconds(start) >= seconds)
-            return 1; /* duration over while waiting for space */
-
-        rb_err_t e = rb_acquire(ring, want, &idx, &w, &cap);
-        if (e == RB_OK)
-            break;
-        if (e == RB_ERR_FULL) {
-            sleep_us(100);
-            continue;
-        }
+    rb_err_t e = rb_acquire(ring, len, &idx, &w, &cap);
+    if (e == RB_ERR_FULL)
+        return 1; /* drop — do not block */
+    if (e != RB_OK) {
         fprintf(stderr, "rb_acquire failed (%d)\n", (int)e);
         return -1;
     }
 
-    uint32_t len = want <= cap ? want : cap;
-    memcpy(w, json, len);
-    (void)seq;
+    uint32_t n = len <= cap ? len : cap;
+    memcpy(w, json, n);
 
-    if (rb_publish(ring, idx, len) != RB_OK) {
+    if (rb_publish(ring, idx, n) != RB_OK) {
         fprintf(stderr, "rb_publish failed\n");
         return -1;
     }
@@ -162,6 +164,8 @@ static int drain_available(rb_t *ring)
             break;
         }
 
+        uint64_t ts_recv = zo_now_ns();
+
         if (len < sizeof(struct zo_result)) {
             fprintf(stderr, "short result len=%u\n", len);
             rb_release(ring, idx);
@@ -169,48 +173,48 @@ static int drain_available(rb_t *ring)
         }
 
         const struct zo_result *r = (const struct zo_result *)obj;
-        printf("CPU  result: seq=%u hash=0x%08x in_len=%u tag=%.4s%s\n",
+        int64_t delta_ns = (int64_t)ts_recv - (int64_t)r->ts_in;
+
+        printf(ZO_CLR_GREEN
+               "[Host R] seq=%u hash=0x%08x in_len=%u tag=%.4s%s\n"
+               "[Host R] payload=\"%.60s\"\n"
+               "[Host R] ts_in=%llu ts_fpga=%llu ts_recv=%llu delta_ns=%lld\n"
+               ZO_CLR_RESET,
                r->seq, r->hash, r->in_len, r->tag,
-               trunc ? " (trunc)" : "");
-        if (len > sizeof(struct zo_result)) {
-            const uint8_t *extra = (const uint8_t *)obj + sizeof(struct zo_result);
-            uint32_t elen = len - (uint32_t)sizeof(struct zo_result);
-            printf("CPU  result extra (%u B): ", elen);
-            for (uint32_t i = 0; i < elen && i < 64u; i++) {
-                unsigned char c = extra[i];
-                putchar((c >= 32 && c < 127) ? (char)c : '.');
-            }
-            if (elen > 64u)
-                printf("…");
-            putchar('\n');
-        }
+               trunc ? " (trunc)" : "",
+               r->payload,
+               (unsigned long long)r->ts_in,
+               (unsigned long long)r->ts_fpga,
+               (unsigned long long)ts_recv,
+               (long long)delta_ns);
+        zo_print_sep();
+
         rb_release(ring, idx);
         got++;
     }
     return got;
 }
 
-/* After publish window: keep draining until quiet or deadline. */
-static int drain_until_quiet(rb_t *ring, double quiet_s,
-                             const struct timespec *start, double deadline_s)
+/* After publish window: keep draining until quiet or hard deadline. */
+static int drain_until_quiet(rb_t *ring, double quiet_s, double deadline)
 {
     int got = 0;
-    struct timespec last_hit;
-    clock_gettime(CLOCK_MONOTONIC, &last_hit);
+    double last_hit = zo_now_sec();
     int have_hit = 0;
 
     for (;;) {
-        if (elapsed_seconds(start) >= deadline_s)
+        double now = zo_now_sec();
+        if (now >= deadline)
             break;
 
         int n = drain_available(ring);
         if (n > 0) {
             got += n;
-            clock_gettime(CLOCK_MONOTONIC, &last_hit);
+            last_hit = now;
             have_hit = 1;
             continue;
         }
-        if (have_hit && elapsed_seconds(&last_hit) >= quiet_s)
+        if (have_hit && (now - last_hit) >= quiet_s)
             break;
         sleep_us(200);
     }
@@ -223,8 +227,9 @@ static void usage(const char *prog)
             "Usage: %s -t <seconds>\n"
             "  -t <seconds>  publish duration (required, > 0)\n"
             "\n"
-            "Continuously cycles sample WebSocket JSON into ring A for the\n"
-            "given wall-clock duration while draining results from ring B.\n"
+            "Continuously generates JSON {ts,seq,payload} into ring A at full\n"
+            "speed for the given duration.  Full ring → drop (counted).\n"
+            "Drains results from ring B with latency deltas.\n"
             "Start ./zynq_fpga_stub in another terminal first (or in parallel).\n",
             prog);
 }
@@ -278,53 +283,92 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    const int n_samples = (int)(sizeof sample_json / sizeof sample_json[0]);
-    printf("publishing sample WS-JSON into ring A for %.2fs "
-           "(%d unique samples, cycling; capacity=%u)\n",
-           seconds, n_samples, (unsigned)ZO_CAPACITY);
+    const int n_payloads = (int)(sizeof sample_payloads / sizeof sample_payloads[0]);
+    printf("publishing JSON {ts,seq,payload} into ring A for %.2fs "
+           "at full speed (capacity=%u, drop on full)\n",
+           seconds, (unsigned)ZO_CAPACITY);
 
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    int published = 0;
-    int received = 0;
-    int i = 0;
-    int full_timeouts = 0;
+    double t0 = zo_now_sec();
+    double t_end = t0 + seconds;
+    double t_last_report = t0;
 
-    /* Continuous generate + drain for the whole duration. */
-    while (elapsed_seconds(&start) < seconds) {
-        const char *json = sample_json[i % n_samples];
-        uint32_t seq = g_zo->bell.seq_in + 1u;
+    uint64_t published = 0;
+    uint64_t dropped   = 0;
+    uint64_t received  = 0;
+    uint32_t seq       = 0;
+    int payload_i      = 0;
 
-        int pr = publish_json(zo_ring_a(g_zo), json, seq, &start, seconds);
-        if (pr < 0)
+    char json_buf[ZO_SLOT_SIZE];
+
+    /* Continuous generate at full speed; drop when full. */
+    while (zo_now_sec() < t_end) {
+        uint32_t this_seq = ++seq;
+        uint64_t ts = zo_now_ns();
+        const char *pl = sample_payloads[payload_i % n_payloads];
+        payload_i++;
+
+        int jlen = build_json(json_buf, sizeof json_buf, ts, this_seq, pl);
+        if (jlen < 0) {
+            fprintf(stderr, "JSON overflow\n");
             return 1;
-        if (pr == 1) {
-            /* Duration expired while waiting for a free slot, or still full. */
-            full_timeouts++;
-            /* Drain whatever is ready so the ring can free up. */
-            received += drain_available(zo_ring_b(g_zo));
-            if (elapsed_seconds(&start) >= seconds)
-                break;
-            sleep_us(100);
-            continue;
         }
 
-        g_zo->bell.seq_in = seq;
-        printf("CPU  published seq=%u len=%zu json=%s\n",
-               seq, strlen(json), json);
-        published++;
-        i++;
+        int pr = try_publish(zo_ring_a(g_zo), json_buf, (uint32_t)jlen);
+        if (pr < 0)
+            return 1;
 
-        /* Drain any results that arrived so far (keeps ring B empty). */
-        received += drain_available(zo_ring_b(g_zo));
+        if (pr == 1) {
+            dropped++;
+            /* Still drain egress so the FPGA can keep making progress. */
+            received += (uint64_t)drain_available(zo_ring_b(g_zo));
+        } else {
+            g_zo->bell.seq_in = this_seq;
+            published++;
+
+            printf(ZO_CLR_RED
+                   "[Host W] seq=%u ts=%llu len=%d\n"
+                   "[Host W] %s\n"
+                   ZO_CLR_RESET,
+                   this_seq, (unsigned long long)ts, jlen - 1, json_buf);
+            zo_print_sep();
+
+            received += (uint64_t)drain_available(zo_ring_b(g_zo));
+        }
+
+        /* Periodic rate / drop report (every ~1 s). */
+        double now = zo_now_sec();
+        if (now - t_last_report >= 1.0) {
+            double elapsed = now - t0;
+            double rate = elapsed > 0.0 ? (double)published / elapsed : 0.0;
+            printf("[Host  ] rate=%.0f pkt/s  published=%llu  dropped=%llu  "
+                   "received=%llu  queue_A=%u/%u\n",
+                   rate,
+                   (unsigned long long)published,
+                   (unsigned long long)dropped,
+                   (unsigned long long)received,
+                   rb_count(zo_ring_a(g_zo)), rb_limit(zo_ring_a(g_zo)));
+            t_last_report = now;
+        }
     }
 
-    printf("publish window done (%d frames, %d full-waits). "
-           "draining remaining results …\n", published, full_timeouts);
+    double t_done = zo_now_sec();
+    double elapsed = t_done - t0;
+    double rate = elapsed > 0.0 ? (double)published / elapsed : 0.0;
 
-    received += drain_until_quiet(zo_ring_b(g_zo), 0.5, &start, seconds + 5.0);
-    printf("done: published=%d received=%d (%.2fs elapsed)\n",
-           published, received, elapsed_seconds(&start));
+    printf("publish window done: published=%llu dropped=%llu rate=%.0f pkt/s\n"
+           "draining remaining results …\n",
+           (unsigned long long)published,
+           (unsigned long long)dropped,
+           rate);
+
+    received += (uint64_t)drain_until_quiet(zo_ring_b(g_zo), 0.5, t_done + 5.0);
+
+    printf("done: published=%llu dropped=%llu received=%llu "
+           "rate=%.0f pkt/s (%.2fs elapsed)\n",
+           (unsigned long long)published,
+           (unsigned long long)dropped,
+           (unsigned long long)received,
+           rate, elapsed);
 
     if (published > 0 && received == 0) {
         fprintf(stderr,
