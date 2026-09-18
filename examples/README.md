@@ -319,22 +319,26 @@ alignment is needed for this configuration. For embedded targets with
 Petalinux on the PS and programmable logic on the PL (Antminer S9 class
 boards).
 
-- **Ring A (ingress):** CPU publishes WebSocket JSON frames; FPGA consumes.
-- **Ring B (egress):** FPGA publishes hashed/processed results; CPU drains.
+- **Ring A (ingress):** CPU publishes JSON `{"ts","seq","payload"}` continuously
+  at full speed for `-t <seconds>`; **drops when full** and reports rate/drops.
+- **Ring B (egress):** FPGA publishes hashed results; CPU drains with latency deltas.
+- Colored packet dumps: red `[Host|FPGA W]`, green `[Host|FPGA R]`, separated by `---`.
 - Scratchpads live in a shared region (POSIX shm for host testing, reserved
   DDR/BRAM on the real board).
 - Uses the `RB_HW_FLUSH_SLOT` / `RB_HW_INVALIDATE_SLOT` / `RB_HW_NOTIFY_DEVICE`
   stubs for cache visibility and doorbells.
+- JSON is a stand-in; a later revision can swap in protobuf or Avro without
+  changing the ring path.
 
 ```bash
 cmake -B build -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target zynq_cpu_host zynq_fpga_stub
 
 # Terminal 1
-./build/examples/zynq_fpga_stub
+./build/examples/zynq_fpga_stub -t 70
 
 # Terminal 2
-./build/examples/zynq_cpu_host
+./build/examples/zynq_cpu_host -t 60
 ```
 
 See `examples/zynq_offload/README.md` for the memory map, Petalinux device-tree
