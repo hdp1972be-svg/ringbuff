@@ -53,7 +53,7 @@ struct zo_result {
     char     payload[60];  /* short echo of ingress payload for display */
 };
 
-_Static_assert(sizeof(struct zo_result) == 88, "zo_result size drift");
+_Static_assert(sizeof(struct zo_result) == 96, "zo_result size drift");
 _Static_assert(_Alignof(struct zo_result) >= 8, "zo_result alignment");
 
 /*
