@@ -13,6 +13,11 @@
  * be tested without hardware.  The ownership protocol and the RB_HW_*
  * hooks are identical.
  *
+ * Prints:
+ *   [FPGA R] green  — ingress JSON + local receive ts + latency delta
+ *   [FPGA W] red    — egress result (hash, payload echo, ts_fpga)
+ *   ---             — packet separator
+ *
  * Usage:
  *   ./zynq_fpga_stub [-t <seconds>]
  *   -t <seconds>  run for this wall-clock duration (recommended)
@@ -38,14 +43,6 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
-
-static double elapsed_seconds(const struct timespec *start)
-{
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)(now.tv_sec - start->tv_sec) +
-           (double)(now.tv_nsec - start->tv_nsec) / 1e9;
-}
 
 static void sleep_us(unsigned us)
 {
@@ -75,6 +72,53 @@ static struct zo_shared *map_shared(void)
 }
 
 /*
+ * Minimal JSON field extractors for the fixed shape
+ *   {"ts":N,"seq":N,"payload":"..."}
+ * Not a general parser — good enough for the demo path.
+ * Future protobuf/avro path replaces these helpers entirely.
+ */
+static int parse_u64_field(const char *json, const char *key, uint64_t *out)
+{
+    char pat[32];
+    snprintf(pat, sizeof pat, "\"%s\":", key);
+    const char *p = strstr(json, pat);
+    if (!p)
+        return -1;
+    p += strlen(pat);
+    char *end = NULL;
+    unsigned long long v = strtoull(p, &end, 10);
+    if (end == p)
+        return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
+static int parse_u32_field(const char *json, const char *key, uint32_t *out)
+{
+    uint64_t v = 0;
+    if (parse_u64_field(json, key, &v) != 0)
+        return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static int parse_str_field(const char *json, const char *key,
+                           char *out, size_t outsz)
+{
+    char pat[32];
+    snprintf(pat, sizeof pat, "\"%s\":\"", key);
+    const char *p = strstr(json, pat);
+    if (!p)
+        return -1;
+    p += strlen(pat);
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < outsz)
+        out[i++] = *p++;
+    out[i] = '\0';
+    return 0;
+}
+
+/*
  * Process one ingress frame.
  * Returns:
  *   1  processed
@@ -82,8 +126,7 @@ static struct zo_shared *map_shared(void)
  *  -1  hard error
  *   2  timed out waiting for egress space (CPU not draining)
  */
-static int process_one(rb_t *in, rb_t *out,
-                       const struct timespec *start, double max_seconds)
+static int process_one(rb_t *in, rb_t *out, double max_seconds, double t0)
 {
     uint32_t idx = 0, len = 0;
     const void *obj = NULL;
@@ -94,29 +137,49 @@ static int process_one(rb_t *in, rb_t *out,
 
     /* RB_HW_INVALIDATE_SLOT already ran inside rb_consume. */
 
-    uint32_t h = zo_fast_hash(obj, len);
-    uint32_t seq = ++g_zo->bell.seq_out;
+    uint64_t ts_local = zo_now_ns();
 
-    printf("FPGA consumed ingress slot %u len=%u trunc=%d seq=%u hash=0x%08x\n",
-           idx, len, (int)trunc, seq, h);
-    if (len > 0) {
-        uint32_t plen = len;
-        const char *s = (const char *)obj;
-        for (uint32_t i = 0; i < len; i++) {
-            if (s[i] == '\0') {
-                plen = i;
-                break;
-            }
-        }
-        printf("FPGA json (%u B): %.*s\n", plen, (int)plen, s);
-    }
+    /* Treat payload as C string when possible. */
+    char json_copy[ZO_SLOT_SIZE];
+    uint32_t copy_len = len < sizeof json_copy ? len : (uint32_t)sizeof json_copy - 1u;
+    memcpy(json_copy, obj, copy_len);
+    json_copy[copy_len] = '\0';
+    /* Strip trailing NULs for display length. */
+    uint32_t plen = (uint32_t)strlen(json_copy);
+
+    uint64_t ts_in = 0;
+    uint32_t seq_in = 0;
+    char payload[64] = "";
+    (void)parse_u64_field(json_copy, "ts", &ts_in);
+    (void)parse_u32_field(json_copy, "seq", &seq_in);
+    (void)parse_str_field(json_copy, "payload", payload, sizeof payload);
+
+    int64_t delta_ns = ts_in ? (int64_t)ts_local - (int64_t)ts_in : 0;
+
+    printf(ZO_CLR_GREEN
+           "[FPGA R] seq=%u len=%u trunc=%d\n"
+           "[FPGA R] msg=%.*s\n"
+           "[FPGA R] payload=\"%s\"\n"
+           "[FPGA R] ts_in=%llu ts_local=%llu delta_ns=%lld\n"
+           ZO_CLR_RESET,
+           seq_in, len, (int)trunc,
+           (int)plen, json_copy,
+           payload,
+           (unsigned long long)ts_in,
+           (unsigned long long)ts_local,
+           (long long)delta_ns);
+
+    /* Process: hash the whole ingress blob (stand-in for PL work). */
+    uint32_t h = zo_fast_hash(obj, len);
+    uint32_t seq_out = ++g_zo->bell.seq_out;
+    uint64_t ts_fpga = zo_now_ns();
 
     /* Publish result into egress ring B — must not block forever. */
     uint32_t oidx = 0, ocap = 0;
     void *w = NULL;
     int full_spins = 0;
     for (;;) {
-        if (max_seconds > 0.0 && elapsed_seconds(start) >= max_seconds) {
+        if (max_seconds > 0.0 && (zo_now_sec() - t0) >= max_seconds) {
             fprintf(stderr, "FPGA: duration expired while waiting for egress space\n");
             rb_release(in, idx);
             return 2;
@@ -139,10 +202,14 @@ static int process_one(rb_t *in, rb_t *out,
     }
 
     struct zo_result *r = (struct zo_result *)w;
-    r->seq    = seq;
-    r->hash   = h;
-    r->in_len = len;
+    memset(r, 0, sizeof *r);
+    r->seq     = seq_in ? seq_in : seq_out;
+    r->hash    = h;
+    r->in_len  = len;
+    r->ts_in   = ts_in;
+    r->ts_fpga = ts_fpga;
     memcpy(r->tag, "HASH", 4);
+    strncpy(r->payload, payload, sizeof r->payload - 1u);
 
     if (rb_publish(out, oidx, (uint32_t)sizeof *r) != RB_OK) {
         fprintf(stderr, "FPGA rb_publish(egress) failed\n");
@@ -153,6 +220,17 @@ static int process_one(rb_t *in, rb_t *out,
     /* RB_HW_FLUSH_SLOT + RB_HW_NOTIFY_DEVICE already ran.
      * Also raise the CPU-visible doorbell (stand-in for IRQ). */
     g_zo->bell.fpga_to_cpu = 1u;
+
+    printf(ZO_CLR_RED
+           "[FPGA W] seq=%u hash=0x%08x in_len=%u tag=%.4s\n"
+           "[FPGA W] payload=\"%.60s\"\n"
+           "[FPGA W] ts_in=%llu ts_fpga=%llu\n"
+           ZO_CLR_RESET,
+           r->seq, r->hash, r->in_len, r->tag,
+           r->payload,
+           (unsigned long long)r->ts_in,
+           (unsigned long long)r->ts_fpga);
+    zo_print_sep();
 
     rb_release(in, idx);
     return 1;
@@ -210,18 +288,17 @@ int main(int argc, char **argv)
         printf(" for %.2fs", max_seconds);
     printf("\n");
 
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    double t0 = zo_now_sec();
 
     int total = 0;
     int idle_rounds = 0;
     const int idle_limit = 100; /* ~2 s only used when no -t */
 
     for (;;) {
-        if (max_seconds > 0.0 && elapsed_seconds(&start) >= max_seconds)
+        if (max_seconds > 0.0 && (zo_now_sec() - t0) >= max_seconds)
             break;
 
-        int n = process_one(in, out, &start, max_seconds);
+        int n = process_one(in, out, max_seconds, t0);
         if (n == 1) {
             total += 1;
             idle_rounds = 0;
@@ -241,6 +318,6 @@ int main(int argc, char **argv)
     }
 
     printf("FPGA stub done, processed %d frames (%.2fs elapsed)\n",
-           total, elapsed_seconds(&start));
+           total, zo_now_sec() - t0);
     return 0;
 }
