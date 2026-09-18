@@ -1,7 +1,7 @@
 # Zynq-7000 / Antminer S9 dual-ring offload
 
-Real-world example: CPU (Petalinux on the PS) pushes WebSocket JSON
-or market-data frames into an **ingress** ring whose scratchpad lives in
+Real-world example: CPU (Petalinux on the PS) pushes JSON frames
+(or, later, protobuf/Avro) into an **ingress** ring whose scratchpad lives in
 shared memory (DDR visible to the PL, or on-chip BRAM). The FPGA reads
 the slots, runs a fast transform (hash, light crypto, rolling stats,
 FFT-style work), and writes results into an **egress** ring. The CPU
@@ -83,9 +83,9 @@ as the base OS if you do not want a full Petalinux rebuild.
 
 | File | Role |
 |------|------|
-| `common.h` | Dual-ring layout, slot payload format, doorbell words |
+| `common.h` | Dual-ring layout, JSON/result format, colors, timestamps |
 | `hw_port.h` | Example overrides of the three `RB_HW_*` macros |
-| `cpu_host.c` | PS-side program (producer on A, consumer on B) |
+| `cpu_host.c` | PS-side continuous JSON writer + egress drain |
 | `fpga_stub.c` | Userspace model of the PL path (host testing) |
 | `hdl/rb_offload_pl.v` | Parameterized Verilog PL sketch (BRAM + doorbells + hash) |
 | `hdl/README.md` | HDL parameters, AXI-lite map, BRAM budget table |
@@ -99,16 +99,43 @@ as the base OS if you do not want a full Petalinux rebuild.
 cmake -B build -DRB_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target zynq_cpu_host zynq_fpga_stub
 
-# Terminal 1 – FPGA model
-./build/examples/zynq_fpga_stub
+# Terminal 1 – FPGA model (run a bit longer than the host)
+./build/examples/zynq_fpga_stub -t 70
 
-# Terminal 2 – CPU host
-./build/examples/zynq_cpu_host
+# Terminal 2 – CPU host (continuous write for 60 s)
+./build/examples/zynq_cpu_host -t 60
 ```
 
 Both processes share one POSIX shm region that holds the two control
 blocks and the two scratchpads. This validates ownership, flush/
 invalidate hooks, and doorbells before you touch hardware.
+
+### What the host does (`-t <seconds>`)
+
+- Generates JSON continuously at the fastest rate possible:
+  `{"ts":<ns>,"seq":<uint32>,"payload":"..."}`
+- Publishes into ingress ring A. **If the ring is full the packet is
+  dropped** (counted) — the writer never blocks.
+- Prints every written frame in **red** with prefix `[Host W]`.
+- Drains egress ring B; prints each result in **green** with prefix
+  `[Host R]`, including local receive timestamp and write→receive delta.
+- Every ~1 s prints rate (pkt/s), published, dropped, received, queue depth.
+- Packets are separated by a `---` line.
+
+### What the FPGA stub does
+
+- On each ingress consume: print **green** `[FPGA R]` with full message,
+  payload, local timestamp, and delta vs ingress `ts`.
+- Hash the payload, build a `zo_result`, publish to egress.
+- Print **red** `[FPGA W]` with outgoing seq/hash/payload/timestamps.
+- Separate packets with `---`.
+
+### Future encoding
+
+The JSON body is a readable stand-in. A later revision can swap in
+**protobuf** or **Avro** for the slot payload; only the
+serialize/deserialize helpers change. The dual-ring path, drop policy,
+and `RB_HW_*` hooks stay the same.
 
 ---
 
@@ -251,7 +278,7 @@ point of the dual-ring offload.
 CPU                          shared DDR/BRAM                      FPGA
 ───                          ──────────────                       ────
 rb_acquire(ring_A)
-write payload into slot
+write JSON {ts,seq,payload}
 RB_HW_FLUSH_SLOT             (cache clean + dsb)
 rb_publish(ring_A)
 RB_HW_NOTIFY_DEVICE  ──────► DOORBELL_IN / IRQ
@@ -261,7 +288,7 @@ RB_HW_NOTIFY_DEVICE  ──────► DOORBELL_IN / IRQ
                                                       DOORBELL_OUT / IRQ
 rb_consume(ring_B)   ◄──────
 RB_HW_INVALIDATE_SLOT
-use result
+use result (+ latency delta)
 rb_release(ring_B)
                                                       (CPU also rb_release A)
 ```
@@ -270,21 +297,32 @@ rb_release(ring_B)
 
 ## Example “crunch” in this tree
 
+Ingress is JSON:
+
+```json
+{"ts":1710000000123456789,"seq":42,"payload":"mining.submit"}
+```
+
 The software stub and the Verilog both compute a 32-bit FNV-style hash
-and return:
+and return a fixed binary result:
 
 ```c
 struct zo_result {
-    uint32_t seq;
+    uint32_t seq;          /* echoes ingress seq */
     uint32_t hash;
     uint32_t in_len;
-    char     tag[4];   /* "HASH" */
+    uint32_t _pad;
+    uint64_t ts_in;        /* from JSON */
+    uint64_t ts_fpga;      /* when PL finished */
+    char     tag[4];       /* "HASH" */
+    char     payload[60];  /* short echo for display */
 };
 ```
 
 On the real PL, replace that block with whatever fits the DSP/BRAM
 budget: streaming FFT bins, indicator vector, encrypted blob, compressed
-chunk, etc. The ring protocol stays the same.
+chunk, etc. The ring protocol stays the same. A later software revision
+can replace JSON with protobuf or Avro without touching the rings.
 
 ---
 
