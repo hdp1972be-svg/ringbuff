@@ -7,22 +7,16 @@
  * results from egress ring B.  When the ingress ring is full the packet
  * is dropped (counted) so the writer never blocks.
  *
- * JSON shape (stand-in for a future protobuf / Avro encoding):
- *   {"ts":<ns>,"seq":<uint32>,"payload":"..."}
- *
- * Quiet by default (end-of-run stats only).  Pass -v for per-packet dumps.
+ * Ring size is chosen at init with -s (rb_config_set_capacity/slots).
+ * Quiet by default; -v enables per-packet dumps.
  *
  * Typical pair:
  *   terminal 1: ./zynq_fpga_stub -t 70
- *   terminal 2: ./zynq_cpu_host  -t 60
- *
- * On a real Antminer S9 replace the shm_open path with mmap of the
- * reserved DDR/BRAM window and feed real socket data into the publish
- * loop.
+ *   terminal 2: ./zynq_cpu_host  -t 60 -s 256
  */
 #define _POSIX_C_SOURCE 200809L
 
-#include "hw_port.h"   /* installs RB_HW_* overrides */
+#include "hw_port.h"
 #include "common.h"
 
 #include <errno.h>
@@ -36,7 +30,7 @@
 #include <unistd.h>
 
 struct zo_shared *g_zo;
-static int g_verbose; /* -v: per-packet + periodic rate prints */
+static int g_verbose;
 
 static void sleep_us(unsigned us)
 {
@@ -69,28 +63,44 @@ static struct zo_shared *map_shared(int create)
     return (struct zo_shared *)p;
 }
 
-static int init_rings(struct zo_shared *s)
+/* Init both rings with the same capacity/slots (from -s). */
+static int init_rings(struct zo_shared *s, uint32_t slots)
 {
+    slots = zo_clamp_slots(slots);
+
+    /* Control blocks must fit. */
+    if (rb_size(slots) > ZO_RING_MEM) {
+        fprintf(stderr, "rb_size(%u)=%zu exceeds ZO_RING_MEM=%u\n",
+                slots, rb_size(slots), (unsigned)ZO_RING_MEM);
+        return -1;
+    }
+
     rb_config_t cfg;
     rb_config_init(&cfg);
-    cfg.capacity  = ZO_CAPACITY;
-    cfg.slots     = ZO_SLOTS;
-    cfg.slot_size = ZO_SLOT_SIZE;
-    cfg.limit     = ZO_CAPACITY;
+    rb_config_set_capacity(&cfg, slots);
+    rb_config_set_slots(&cfg, slots);
+    rb_config_set_slot_size(&cfg, ZO_SLOT_SIZE);
+    rb_config_set_limit(&cfg, slots);
 
+    size_t scratch_need = (size_t)slots * ZO_SLOT_SIZE;
     if (rb_init(zo_ring_a(s), &cfg, s->scratch_a, sizeof s->scratch_a) != RB_OK)
         return -1;
     if (rb_init(zo_ring_b(s), &cfg, s->scratch_b, sizeof s->scratch_b) != RB_OK)
         return -1;
 
+    (void)scratch_need;
     s->bell.cpu_to_fpga = 0;
     s->bell.fpga_to_cpu = 0;
     s->bell.seq_in = 0;
     s->bell.seq_out = 0;
+    s->bell.slots = slots;
+    s->bell.ready = 1u; /* FPGA may proceed */
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ volatile("" ::: "memory");
+#endif
     return 0;
 }
 
-/* Sample payload strings cycled into the JSON "payload" field. */
 static const char *sample_payloads[] = {
     "mining.subscribe",
     "mining.authorize",
@@ -99,13 +109,6 @@ static const char *sample_payloads[] = {
     "heartbeat",
 };
 
-/*
- * Build one ingress JSON into buf.
- * Returns length including trailing NUL, or -1 on overflow.
- *
- * Future: replace this helper with protobuf / Avro encode; the ring
- * publish path stays the same.
- */
 static int build_json(char *buf, size_t bufsz, uint64_t ts, uint32_t seq,
                       const char *payload)
 {
@@ -114,16 +117,9 @@ static int build_json(char *buf, size_t bufsz, uint64_t ts, uint32_t seq,
                      (unsigned long long)ts, seq, payload);
     if (n < 0 || (size_t)n + 1u > bufsz)
         return -1;
-    return n + 1; /* include NUL so consumer can treat as C string */
+    return n + 1;
 }
 
-/*
- * Try to publish one JSON at full speed.
- * Returns:
- *   0  published
- *   1  dropped (ring full)
- *  -1  hard error
- */
 static int try_publish(rb_t *ring, const char *json, uint32_t len)
 {
     uint32_t idx = 0, cap = 0;
@@ -131,7 +127,7 @@ static int try_publish(rb_t *ring, const char *json, uint32_t len)
 
     rb_err_t e = rb_acquire(ring, len, &idx, &w, &cap);
     if (e == RB_ERR_FULL)
-        return 1; /* drop — do not block */
+        return 1;
     if (e != RB_OK) {
         fprintf(stderr, "rb_acquire failed (%d)\n", (int)e);
         return -1;
@@ -144,11 +140,9 @@ static int try_publish(rb_t *ring, const char *json, uint32_t len)
         fprintf(stderr, "rb_publish failed\n");
         return -1;
     }
-    /* RB_HW_FLUSH_SLOT + RB_HW_NOTIFY_DEVICE already ran inside publish. */
     return 0;
 }
 
-/* Drain all currently available egress results (non-blocking). */
 static int drain_available(rb_t *ring)
 {
     int got = 0;
@@ -195,7 +189,6 @@ static int drain_available(rb_t *ring)
     return got;
 }
 
-/* After publish window: keep draining until quiet or hard deadline. */
 static int drain_until_quiet(rb_t *ring, double quiet_s, double deadline)
 {
     int got = 0;
@@ -224,7 +217,7 @@ static int drain_until_quiet(rb_t *ring, double quiet_s, double deadline)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s -t <seconds> [-v] [-h]\n"
+            "Usage: %s -t <seconds> [-s <slots>] [-v] [-h]\n"
             "\n"
             "What this program does\n"
             "  CPU (PS) side of the dual-ring Zynq offload demo. Continuously\n"
@@ -233,28 +226,33 @@ static void usage(const char *prog)
             "  dropped (counted) — the writer never blocks.  Concurrently drains\n"
             "  hashed results from egress ring B.\n"
             "\n"
-            "  Pair with ./zynq_fpga_stub in another terminal (start the stub\n"
-            "  first, or in parallel).  Shared memory: %s\n"
+            "  Pair with ./zynq_fpga_stub in another terminal.  Shared memory:\n"
+            "  %s\n"
             "\n"
             "Options\n"
             "  -t <seconds>  publish duration (required, must be > 0)\n"
-            "  -v            verbose: per-packet [Host W]/[Host R] dumps and\n"
-            "                periodic rate lines (~1 s).  Default is quiet:\n"
-            "                only a final stats summary is printed.\n"
+            "  -s <slots>    ring capacity/slots for BOTH ingress and egress\n"
+            "                (default %u, max %u).  Applied at rb_init via\n"
+            "                rb_config_set_capacity / rb_config_set_slots.\n"
+            "                Larger values absorb bursts and reduce drops.\n"
+            "  -v            verbose: per-packet dumps + periodic rate lines.\n"
+            "                Default is quiet (final stats only).\n"
             "  -h            show this help and exit\n"
             "\n"
             "Example\n"
             "  terminal 1: ./zynq_fpga_stub -t 70\n"
-            "  terminal 2: ./zynq_cpu_host  -t 60\n"
-            "  (add -v on either side to watch individual packets)\n",
-            prog, ZO_SHM_NAME);
+            "  terminal 2: ./zynq_cpu_host  -t 60 -s 256\n",
+            prog, ZO_SHM_NAME,
+            (unsigned)ZO_DEFAULT_SLOTS, (unsigned)ZO_MAX_SLOTS);
 }
 
 int main(int argc, char **argv)
 {
     double seconds = -1.0;
+    uint32_t slots = ZO_DEFAULT_SLOTS;
     int c;
-    while ((c = getopt(argc, argv, "t:vh")) != -1) {
+
+    while ((c = getopt(argc, argv, "t:s:vh")) != -1) {
         switch (c) {
         case 't': {
             char *end = NULL;
@@ -262,6 +260,20 @@ int main(int argc, char **argv)
             if (!end || *end != '\0' || !(seconds > 0.0)) {
                 fprintf(stderr, "%s: invalid -t value '%s'\n", argv[0], optarg);
                 return 2;
+            }
+            break;
+        }
+        case 's': {
+            char *end = NULL;
+            unsigned long v = strtoul(optarg, &end, 0);
+            if (!end || *end != '\0' || v < 1ul) {
+                fprintf(stderr, "%s: invalid -s value '%s'\n", argv[0], optarg);
+                return 2;
+            }
+            slots = zo_clamp_slots((uint32_t)v);
+            if ((unsigned long)slots != v) {
+                fprintf(stderr, "%s: -s clamped to %u (max %u)\n",
+                        argv[0], slots, (unsigned)ZO_MAX_SLOTS);
             }
             break;
         }
@@ -281,14 +293,17 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    printf("zynq_offload cpu_host — duration=%.2fs verbose=%s\n",
-           seconds, g_verbose ? "on" : "off (stats at end only)");
+    printf("zynq_offload cpu_host — duration=%.2fs slots=%u verbose=%s\n",
+           seconds, slots, g_verbose ? "on" : "off (stats at end only)");
     printf("hint: start ./zynq_fpga_stub [-t %.0f] in another terminal\n",
            seconds + 10.0);
 
     g_zo = map_shared(1);
     if (!g_zo)
         return 1;
+
+    /* Clear ready until init completes (FPGA waits on this). */
+    g_zo->bell.ready = 0;
 
     if (((uintptr_t)zo_ring_a(g_zo) % RB_CACHE_LINE) != 0 ||
         ((uintptr_t)zo_ring_b(g_zo) % RB_CACHE_LINE) != 0 ||
@@ -299,16 +314,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (init_rings(g_zo) != 0) {
+    if (init_rings(g_zo, slots) != 0) {
         fprintf(stderr, "rb_init failed (check alignment / sizes)\n");
         return 1;
     }
 
     const int n_payloads = (int)(sizeof sample_payloads / sizeof sample_payloads[0]);
     if (g_verbose) {
-        printf("publishing JSON {ts,seq,payload} into ring A for %.2fs "
-               "at full speed (capacity=%u, drop on full)\n",
-               seconds, (unsigned)ZO_CAPACITY);
+        printf("publishing JSON into ring A for %.2fs at full speed "
+               "(slots=%u, drop on full)\n", seconds, slots);
     }
 
     double t0 = zo_now_sec();
@@ -320,10 +334,8 @@ int main(int argc, char **argv)
     uint64_t received  = 0;
     uint32_t seq       = 0;
     int payload_i      = 0;
-
     char json_buf[ZO_SLOT_SIZE];
 
-    /* Continuous generate at full speed; drop when full. */
     while (zo_now_sec() < t_end) {
         uint32_t this_seq = ++seq;
         uint64_t ts = zo_now_ns();
@@ -342,7 +354,6 @@ int main(int argc, char **argv)
 
         if (pr == 1) {
             dropped++;
-            /* Still drain egress so the FPGA can keep making progress. */
             received += (uint64_t)drain_available(zo_ring_b(g_zo));
         } else {
             g_zo->bell.seq_in = this_seq;
@@ -360,7 +371,6 @@ int main(int argc, char **argv)
             received += (uint64_t)drain_available(zo_ring_b(g_zo));
         }
 
-        /* Periodic rate / drop report only in verbose mode. */
         if (g_verbose) {
             double now = zo_now_sec();
             if (now - t_last_report >= 1.0) {
@@ -386,26 +396,24 @@ int main(int argc, char **argv)
         printf("publish window done: published=%llu dropped=%llu rate=%.0f pkt/s\n"
                "draining remaining results …\n",
                (unsigned long long)published,
-               (unsigned long long)dropped,
-               rate);
+               (unsigned long long)dropped, rate);
     }
 
     received += (uint64_t)drain_until_quiet(zo_ring_b(g_zo), 0.5, t_done + 5.0);
 
-    /* Final stats always printed. */
     printf("done: published=%llu dropped=%llu received=%llu "
-           "rate=%.0f pkt/s (%.2fs elapsed)\n",
+           "rate=%.0f pkt/s slots=%u (%.2fs elapsed)\n",
            (unsigned long long)published,
            (unsigned long long)dropped,
            (unsigned long long)received,
-           rate, elapsed);
+           rate, slots, elapsed);
 
     if (published > 0 && received == 0) {
         fprintf(stderr,
                 "no results received — is zynq_fpga_stub running?\n"
                 "  terminal 1: ./zynq_fpga_stub -t %.0f\n"
-                "  terminal 2: ./zynq_cpu_host  -t %.0f\n",
-                seconds + 10.0, seconds);
+                "  terminal 2: ./zynq_cpu_host  -t %.0f -s %u\n",
+                seconds + 10.0, seconds, slots);
         return 2;
     }
     return 0;
