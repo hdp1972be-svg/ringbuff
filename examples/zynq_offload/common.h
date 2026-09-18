@@ -10,11 +10,22 @@
 #include <stdio.h>
 #include <time.h>
 
-/* ---- Tunables (keep modest so the example fits in BRAM on a 7010) ---- */
-#define ZO_CAPACITY     32u
-#define ZO_SLOTS        32u
-#define ZO_SLOT_SIZE    512u   /* JSON frame or future protobuf/avro blob */
-#define ZO_SHM_NAME     "/rb_zynq_offload"
+/*
+ * Slot / capacity sizing
+ * ---------------------
+ * Scratchpads are allocated for ZO_MAX_SLOTS so -s can pick any size up
+ * to that at rb_init time (rb_config_set_capacity / rb_config_set_slots).
+ * The host writes the chosen value into the shared header; the FPGA
+ * side only observes it (it does not re-init the rings).
+ *
+ * Default remains 32 for small-BRAM demos; raise with -s for fewer drops
+ * under a fast host.
+ */
+#define ZO_DEFAULT_SLOTS  32u
+#define ZO_MAX_SLOTS      4096u
+#define ZO_SLOT_SIZE      512u   /* JSON frame or future protobuf/avro blob */
+#define ZO_RING_MEM       32768u /* room for rb_size(ZO_MAX_SLOTS) */
+#define ZO_SHM_NAME       "/rb_zynq_offload"
 
 /* ANSI colours for packet dumps (red = written, green = received). */
 #define ZO_CLR_RED      "\033[31m"
@@ -29,19 +40,11 @@
  *
  *   {"ts":<uint64_ns>,"seq":<uint32>,"payload":"..."}
  *
- * `ts`  — CLOCK_REALTIME nanoseconds at publish time
- * `seq` — free-running uint32 packet id
- * `payload` — work item the PL (or fpga_stub) processes
- *
  * Next implementation: replace the JSON body with protobuf or Avro
- * while keeping the same ring protocol and slot size.  Only the
- * serialize/deserialize helpers need to change; the dual-ring path
- * and RB_HW_* hooks stay identical.
+ * while keeping the same ring protocol and slot size.
  */
 
-/* Result written by the FPGA into the egress ring.
- * Layout is fixed and 8-byte aligned so it is safe to cast the
- * zero-copy slot payload pointer. */
+/* Result written by the FPGA into the egress ring. */
 struct zo_result {
     uint32_t seq;          /* echoes ingress seq */
     uint32_t hash;         /* processed payload hash */
@@ -57,36 +60,32 @@ _Static_assert(sizeof(struct zo_result) == 96, "zo_result size drift");
 _Static_assert(_Alignof(struct zo_result) >= 8, "zo_result alignment");
 
 /*
- * Shared region layout (one POSIX shm object, or one reserved DDR/BRAM
- * window on the real board):
+ * Shared region layout:
  *
- *   [ doorbell words ]
- *   [ ring A control  ]  CPU → FPGA   (ingress)   — RB_CACHE_LINE aligned
- *   [ ring B control  ]  FPGA → CPU   (egress)    — RB_CACHE_LINE aligned
- *   [ scratch A       ]  ZO_SLOTS * ZO_SLOT_SIZE  — RB_CACHE_LINE aligned
- *   [ scratch B       ]  ZO_SLOTS * ZO_SLOT_SIZE  — RB_CACHE_LINE aligned
+ *   [ doorbell + config words ]
+ *   [ ring A control  ]  CPU → FPGA   (ingress)
+ *   [ ring B control  ]  FPGA → CPU   (egress)
+ *   [ scratch A       ]  ZO_MAX_SLOTS * ZO_SLOT_SIZE
+ *   [ scratch B       ]  ZO_MAX_SLOTS * ZO_SLOT_SIZE
  *
- * Doorbell words are ordinary uint32_t flags the other side can poll or
- * that an IRQ controller can watch.  On the real S9 you would map these
- * to AXI-lite registers instead.
- *
- * Ring control blocks and scratchpads MUST be aligned to RB_CACHE_LINE
- * (and therefore to _Alignof(rb_t)); rb_init rejects a misaligned control
- * block.
+ * Actual capacity/slots used is min(requested, ZO_MAX_SLOTS) and is
+ * recorded in bell.slots after the host calls rb_init.
  */
 struct zo_doorbells {
     volatile uint32_t cpu_to_fpga;   /* CPU wrote a new ingress slot */
     volatile uint32_t fpga_to_cpu;   /* FPGA wrote a new egress slot */
     volatile uint32_t seq_in;        /* free-running input sequence */
     volatile uint32_t seq_out;       /* free-running output sequence */
+    volatile uint32_t slots;         /* capacity == slots used by both rings */
+    volatile uint32_t ready;         /* 1 once host finished rb_init */
 };
 
 struct zo_shared {
     struct zo_doorbells bell;
-    _Alignas(RB_CACHE_LINE) uint8_t ring_a_mem[4096];
-    _Alignas(RB_CACHE_LINE) uint8_t ring_b_mem[4096];
-    _Alignas(RB_CACHE_LINE) uint8_t scratch_a[(size_t)ZO_SLOTS * ZO_SLOT_SIZE];
-    _Alignas(RB_CACHE_LINE) uint8_t scratch_b[(size_t)ZO_SLOTS * ZO_SLOT_SIZE];
+    _Alignas(RB_CACHE_LINE) uint8_t ring_a_mem[ZO_RING_MEM];
+    _Alignas(RB_CACHE_LINE) uint8_t ring_b_mem[ZO_RING_MEM];
+    _Alignas(RB_CACHE_LINE) uint8_t scratch_a[(size_t)ZO_MAX_SLOTS * ZO_SLOT_SIZE];
+    _Alignas(RB_CACHE_LINE) uint8_t scratch_b[(size_t)ZO_MAX_SLOTS * ZO_SLOT_SIZE];
 };
 
 static inline rb_t *zo_ring_a(struct zo_shared *s)
@@ -99,7 +98,16 @@ static inline rb_t *zo_ring_b(struct zo_shared *s)
     return (rb_t *)s->ring_b_mem;
 }
 
-/* Nanoseconds from CLOCK_REALTIME (wall clock, for latency deltas). */
+/* Clamp requested slots into [1, ZO_MAX_SLOTS]. */
+static inline uint32_t zo_clamp_slots(uint32_t n)
+{
+    if (n < 1u)
+        return 1u;
+    if (n > ZO_MAX_SLOTS)
+        return ZO_MAX_SLOTS;
+    return n;
+}
+
 static inline uint64_t zo_now_ns(void)
 {
     struct timespec ts;
@@ -107,7 +115,6 @@ static inline uint64_t zo_now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-/* Monotonic seconds for rate reporting. */
 static inline double zo_now_sec(void)
 {
     struct timespec ts;
@@ -115,11 +122,10 @@ static inline double zo_now_sec(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
-/* Simple 32-bit FNV-1a — stand-in for AES/SHA/zip on the FPGA. */
 static inline uint32_t zo_fast_hash(const void *data, uint32_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
-    uint32_t h = 0x811c9dc5u; /* FNV-1a offset basis */
+    uint32_t h = 0x811c9dc5u;
     for (uint32_t i = 0; i < len; i++) {
         h ^= p[i];
         h *= 0x01000193u;
@@ -127,7 +133,6 @@ static inline uint32_t zo_fast_hash(const void *data, uint32_t len)
     return h;
 }
 
-/* Packet separator line. */
 static inline void zo_print_sep(void)
 {
     fputs("---\n", stdout);
