@@ -343,7 +343,7 @@ int main(int argc, char **argv)
             }
         } else if (!strcmp(argv[i], "-v"))
             verbose = 1;
-        } else if (!strcmp(argv[i], "-D"))
+        else if (!strcmp(argv[i], "-D"))
             g_dump = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
