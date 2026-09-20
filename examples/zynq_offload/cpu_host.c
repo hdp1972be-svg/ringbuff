@@ -1,22 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 #define _POSIX_C_SOURCE 200809L
 /*
- * CPU side of the Zynq dual-ring offload example (host throughput test).
+ * CPU side — Zynq dual-ring offload host (throughput / demo).
  *
- *   -t SECS   run for SECS seconds (default 5)
- *   -n N      publish exactly N messages (overrides -t)
- *   -s BYTES  payload size (default 64, max ZO_SLOT_SIZE-16)
- *   -m MODE   wait | drop  (default drop)
- *   -d US     min microseconds between attempts (0 = max rate)
- *   -v        verbose
+ * Geometry is runtime-configurable (same idea as rb_config_t):
  *
- * Concurrently drains ring B so the FPGA cannot stall on a full egress
- * ring.  Wait mode busy-spins on full (no multi-µs sleep on the hot path).
- * At the end prints observed rates and the theoretical no-drop msg/sec
- * under the current parameters.
- *
- * On a real Antminer S9 replace shm_open with mmap of the reserved
- * DDR/BRAM window and feed real socket data into the publish loop.
+ *   -c CAP      capacity (power of 2, default 32, max 256)
+ *   -z SLOTS    slot count (default = capacity, max 256)
+ *   -S BYTES    slot_size (default auto from payload, max 8192)
+ *   -s BYTES    payload size (default 64)
+ *   -t SECS     timed run (default 5; 0 with -n for count mode)
+ *   -n N        publish N messages then stop (overrides -t)
+ *   -m wait|drop
+ *   -d US       min µs between attempts (0 = max rate)
+ *   -v          verbose
  */
 #include "hw_port.h"
 #include "common.h"
@@ -49,6 +46,11 @@ static void sleep_us(long us)
     nanosleep(&ts, NULL);
 }
 
+static int is_pow2(uint32_t v)
+{
+    return v >= 2u && (v & (v - 1u)) == 0u;
+}
+
 static struct zo_shared *map_shared(int create)
 {
     int fd = shm_open(ZO_SHM_NAME, O_RDWR | (create ? O_CREAT : 0), 0666);
@@ -71,24 +73,43 @@ static struct zo_shared *map_shared(int create)
     return (struct zo_shared *)p;
 }
 
-static int init_rings(struct zo_shared *s)
+static int init_rings(struct zo_shared *s, uint32_t cap, uint32_t slots,
+                      uint32_t slot_size)
 {
     rb_config_t cfg;
     rb_config_init(&cfg);
-    cfg.capacity  = ZO_CAPACITY;
-    cfg.slots     = ZO_SLOTS;
-    cfg.slot_size = ZO_SLOT_SIZE;
-    cfg.limit     = ZO_CAPACITY;
+    cfg.capacity  = cap;
+    cfg.slots     = slots;
+    cfg.slot_size = slot_size;
+    cfg.limit     = cap;
 
-    if (rb_init(zo_ring_a(s), &cfg, s->scratch_a, sizeof s->scratch_a) != RB_OK)
+    size_t need = (size_t)slots * slot_size;
+    if (need > sizeof s->scratch_a) {
+        fprintf(stderr, "scratch overflow: need %zu max %zu\n",
+                need, sizeof s->scratch_a);
         return -1;
-    if (rb_init(zo_ring_b(s), &cfg, s->scratch_b, sizeof s->scratch_b) != RB_OK)
+    }
+
+    if (rb_init(zo_ring_a(s), &cfg, s->scratch_a, sizeof s->scratch_a) != RB_OK) {
+        fprintf(stderr, "rb_init(ring_a) failed\n");
         return -1;
+    }
+    if (rb_init(zo_ring_b(s), &cfg, s->scratch_b, sizeof s->scratch_b) != RB_OK) {
+        fprintf(stderr, "rb_init(ring_b) failed\n");
+        return -1;
+    }
 
     s->bell.cpu_to_fpga = 0;
     s->bell.fpga_to_cpu = 0;
     s->bell.seq_in = 0;
     s->bell.seq_out = 0;
+
+    s->cfg.capacity  = cap;
+    s->cfg.slots     = slots;
+    s->cfg.slot_size = slot_size;
+    s->cfg.magic     = ZO_CFG_MAGIC;
+    __sync_synchronize();
+    s->cfg.ready     = 1;
     return 0;
 }
 
@@ -116,7 +137,6 @@ static int publish_payload(rb_t *ring, const void *payload, uint32_t want,
                 (*full_hits)++;
             if (drop_mode)
                 return 1;
-            /* wait mode: busy-spin (no usleep on the hot path) */
             if ((++spins & 0x3ff) == 0) {
                 for (volatile int i = 0; i < 16; i++)
                     ;
@@ -139,7 +159,7 @@ static int publish_payload(rb_t *ring, const void *payload, uint32_t want,
 static int drain_results(rb_t *ring, int expected)
 {
     int got = 0, idle = 0;
-    while (got < expected && idle < 50000000) {
+    while (got < expected && idle < 100000000) {
         uint32_t idx = 0, len = 0;
         const void *obj = NULL;
         bool trunc = false;
@@ -161,46 +181,65 @@ static void usage(const char *prog)
 {
     printf(
         "usage: %s [options]\n"
-        "  -t SECS  duration (default 5)\n"
-        "  -n N     exact message count (overrides -t; N<=5 = sample JSON demo)\n"
-        "  -s BYTES payload size (default 64, max %u)\n"
-        "  -m MODE  wait | drop  (default drop)\n"
-        "  -d US    min \u00b5s between attempts (0 = max rate)\n"
-        "  -v       verbose\n"
-        "  -h       help\n"
+        "  -c CAP      capacity (power of 2, default %u, max %u)\n"
+        "  -z SLOTS    slot count (default = capacity, max %u)\n"
+        "  -S BYTES    slot_size (default auto from -s, max %u)\n"
+        "  -s BYTES    payload size (default %u)\n"
+        "  -t SECS     timed run duration (default 5)\n"
+        "  -n N        publish exactly N messages (overrides -t;\n"
+        "              N<=5 uses sample JSON demo frames)\n"
+        "  -m MODE     wait | drop  (default wait)\n"
+        "  -d US       min \u00b5s between attempts (0 = max rate)\n"
+        "  -v          verbose\n"
+        "  -h          help\n"
         "\n"
-        "Prints observed rates and a theoretical no-drop msg/sec for the\n"
-        "current ring parameters at the end of the run.\n",
-        prog, (unsigned)(ZO_SLOT_SIZE - 16u));
+        "Prints rates and theoretical no-drop msg/sec at the end.\n",
+        prog,
+        ZO_DEFAULT_CAPACITY, ZO_MAX_CAPACITY,
+        ZO_MAX_SLOTS, ZO_MAX_SLOT_SIZE, ZO_DEFAULT_PAYLOAD);
 }
 
 int main(int argc, char **argv)
 {
     double duration = 5.0;
     uint64_t total = 0;
-    uint32_t msg_size = 64u;
-    int drop_mode = 1, verbose = 0, have_n = 0;
+    uint32_t capacity = ZO_DEFAULT_CAPACITY;
+    uint32_t slots = 0;
+    uint32_t slot_size = 0;
+    uint32_t msg_size = ZO_DEFAULT_PAYLOAD;
+    int drop_mode = 0;
+    int verbose = 0;
+    int have_n = 0;
     long pace_us = 0;
 
     for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "-t") && i + 1 < argc)
+        if (!strcmp(argv[i], "-c") && i + 1 < argc)
+            capacity = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-z") && i + 1 < argc)
+            slots = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-S") && i + 1 < argc)
+            slot_size = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc)
+            msg_size = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-t") && i + 1 < argc)
             duration = strtod(argv[++i], NULL);
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
             total = strtoull(argv[++i], NULL, 0);
             have_n = 1;
-        } else if (!strcmp(argv[i], "-s") && i + 1 < argc)
-            msg_size = (uint32_t)strtoul(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "-d") && i + 1 < argc)
+        } else if (!strcmp(argv[i], "-d") && i + 1 < argc)
             pace_us = strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) {
             ++i;
-            if (!strcmp(argv[i], "drop")) drop_mode = 1;
-            else if (!strcmp(argv[i], "wait")) drop_mode = 0;
+            if (!strcmp(argv[i], "drop"))
+                drop_mode = 1;
+            else if (!strcmp(argv[i], "wait"))
+                drop_mode = 0;
             else {
                 fprintf(stderr, "unknown mode: %s\n", argv[i]);
                 return 1;
             }
-        } else if (!strcmp(argv[i], "-v")) verbose = 1;
+        } else if (!strcmp(argv[i], "-v"))
+            verbose = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
             return 0;
@@ -211,9 +250,32 @@ int main(int argc, char **argv)
         }
     }
 
-    if (msg_size < 4u || msg_size > ZO_SLOT_SIZE - 16u) {
-        fprintf(stderr, "payload size %u out of range [4, %u]\n",
-                msg_size, (unsigned)(ZO_SLOT_SIZE - 16u));
+    if (!slots)
+        slots = capacity;
+    if (!slot_size) {
+        slot_size = msg_size + 64u;
+        if (slot_size < 128u)
+            slot_size = 128u;
+        slot_size = (slot_size + 63u) & ~63u;
+    }
+
+    if (!is_pow2(capacity) || capacity > ZO_MAX_CAPACITY) {
+        fprintf(stderr, "capacity %u must be power-of-2 in [2, %u]\n",
+                capacity, ZO_MAX_CAPACITY);
+        return 1;
+    }
+    if (slots < 1u || slots > ZO_MAX_SLOTS) {
+        fprintf(stderr, "slots %u out of range [1, %u]\n", slots, ZO_MAX_SLOTS);
+        return 1;
+    }
+    if (slot_size < 16u || slot_size > ZO_MAX_SLOT_SIZE) {
+        fprintf(stderr, "slot_size %u out of range [16, %u]\n",
+                slot_size, ZO_MAX_SLOT_SIZE);
+        return 1;
+    }
+    if (msg_size < 4u || msg_size + 8u > slot_size) {
+        fprintf(stderr, "payload %u does not fit in slot_size %u\n",
+                msg_size, slot_size);
         return 1;
     }
 
@@ -221,20 +283,19 @@ int main(int argc, char **argv)
 
     printf("zynq_offload cpu_host\n");
     printf("  capacity=%u slots=%u slot_size=%u payload=%u mode=%s pace_us=%ld\n",
-           ZO_CAPACITY, ZO_SLOTS, ZO_SLOT_SIZE, msg_size,
+           capacity, slots, slot_size, msg_size,
            drop_mode ? "drop" : "wait", pace_us);
     if (have_n)
         printf("  limit=%llu\n", (unsigned long long)total);
     else
         printf("  duration=%.1fs\n", duration);
 
+    shm_unlink(ZO_SHM_NAME);
     g_zo = map_shared(1);
     if (!g_zo)
         return 1;
-    if (init_rings(g_zo) != 0) {
-        fprintf(stderr, "rb_init failed\n");
+    if (init_rings(g_zo, capacity, slots, slot_size) != 0)
         return 1;
-    }
 
     char *payload = NULL;
     if (!demo) {
@@ -246,6 +307,8 @@ int main(int argc, char **argv)
         memset(payload, 0xA5, msg_size);
         memcpy(payload, "ZYNQ", 4);
     }
+
+    sleep_us(150000);
 
     double t0 = now_sec();
     double t_end = t0 + duration;
@@ -260,7 +323,6 @@ int main(int argc, char **argv)
             break;
         }
 
-        /* Concurrent drain of B — avoids dual-ring deadlock */
         {
             uint32_t idx = 0, len = 0;
             const void *obj = NULL;
@@ -323,7 +385,7 @@ int main(int argc, char **argv)
 
     printf("\n=== Theoretical no-drop rate ===\n");
     printf("params: capacity=%u slots=%u slot_size=%u payload=%u mode=%s\n",
-           ZO_CAPACITY, ZO_SLOTS, ZO_SLOT_SIZE, msg_size,
+           capacity, slots, slot_size, msg_size,
            drop_mode ? "drop" : "wait");
     printf("Observed consumer throughput: %.0f msg/s\n", consumer_rate);
     if (dropped > 0) {
@@ -337,6 +399,7 @@ int main(int argc, char **argv)
     }
     printf("================================\n");
 
+    g_zo->cfg.ready = 0;
     free(payload);
     return (got == (int)published) ? 0 : 2;
 }
