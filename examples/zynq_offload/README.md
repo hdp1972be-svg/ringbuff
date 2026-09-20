@@ -103,6 +103,8 @@ cmake --build build --target zynq_cpu_host zynq_fpga_stub
 ./build/examples/zynq_fpga_stub
 
 # Terminal 2 – CPU host
+./build/examples/zynq_cpu_host -n 5 -D          # packet dump + latency (green/red)
+./build/examples/zynq_cpu_host -t 2 -s 128 -c 64  # throughput example
 ./build/examples/zynq_cpu_host
 ```
 
