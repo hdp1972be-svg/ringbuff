@@ -8,10 +8,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* ---- Tunables (keep small so the example fits in a modest BRAM) ---- */
+/* ---- Tunables (host test allows larger; real BRAM should stay modest) ---- */
 #define ZO_CAPACITY     32u
 #define ZO_SLOTS        32u
-#define ZO_SLOT_SIZE    512u   /* header + ~500 B of WS JSON */
+#define ZO_SLOT_SIZE    8192u  /* allows -s up to ~8 KiB payloads in host test */
 #define ZO_SHM_NAME     "/rb_zynq_offload"
 
 /* Result written by the FPGA into the egress ring. */
@@ -45,11 +45,12 @@ struct zo_doorbells {
 
 struct zo_shared {
     struct zo_doorbells bell;
-    /* Control blocks are oversized; rb_size(CAPACITY) is the true need. */
-    uint8_t ring_a_mem[4096];
-    uint8_t ring_b_mem[4096];
-    uint8_t scratch_a[(size_t)ZO_SLOTS * ZO_SLOT_SIZE];
-    uint8_t scratch_b[(size_t)ZO_SLOTS * ZO_SLOT_SIZE];
+    /* Control blocks must be RB_CACHE_LINE aligned (rb_t has ALIGNAS). */
+    uint8_t _pad0[64 - (sizeof(struct zo_doorbells) % 64)];
+    uint8_t ring_a_mem[4096] __attribute__((aligned(64)));
+    uint8_t ring_b_mem[4096] __attribute__((aligned(64)));
+    uint8_t scratch_a[(size_t)ZO_SLOTS * ZO_SLOT_SIZE] __attribute__((aligned(64)));
+    uint8_t scratch_b[(size_t)ZO_SLOTS * ZO_SLOT_SIZE] __attribute__((aligned(64)));
 };
 
 static inline rb_t *zo_ring_a(struct zo_shared *s)

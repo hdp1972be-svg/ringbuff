@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#define _POSIX_C_SOURCE 200809L
 /*
  * Software model of the FPGA side.
  *
@@ -30,7 +31,7 @@ struct zo_shared *g_zo;
 static struct zo_shared *map_shared(void)
 {
     /* Wait until cpu_host has created the segment. */
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 100; i++) {
         int fd = shm_open(ZO_SHM_NAME, O_RDWR, 0666);
         if (fd >= 0) {
             void *p = mmap(NULL, sizeof(struct zo_shared),
@@ -45,7 +46,7 @@ static struct zo_shared *map_shared(void)
     return NULL;
 }
 
-static int process_one(rb_t *in, rb_t *out)
+static int process_one(rb_t *in, rb_t *out, int quiet)
 {
     uint32_t idx = 0, len = 0;
     const void *obj = NULL;
@@ -59,8 +60,10 @@ static int process_one(rb_t *in, rb_t *out)
     uint32_t h = zo_fast_hash(obj, len);
     uint32_t seq = ++g_zo->bell.seq_out;
 
-    printf("FPGA consumed ingress slot %u len=%u → hash=0x%08x seq=%u\n",
-           idx, len, h, seq);
+    if (!quiet) {
+        printf("FPGA consumed ingress slot %u len=%u → hash=0x%08x seq=%u\n",
+               idx, len, h, seq);
+    }
 
     /* Publish result into egress ring B. */
     uint32_t oidx = 0, ocap = 0;
@@ -70,7 +73,7 @@ static int process_one(rb_t *in, rb_t *out)
         if (e == RB_OK)
             break;
         if (e == RB_ERR_FULL) {
-            usleep(50);
+            usleep(20);
             continue;
         }
         fprintf(stderr, "FPGA rb_acquire(egress) failed\n");
@@ -98,8 +101,14 @@ static int process_one(rb_t *in, rb_t *out)
     return 1;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    int quiet = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "-q"))
+            quiet = 1;
+    }
+
     printf("zynq_offload fpga_stub — waiting for shared region\n");
     g_zo = map_shared();
     if (!g_zo)
@@ -112,15 +121,18 @@ int main(void)
 
     int total = 0;
     int idle_rounds = 0;
-    while (idle_rounds < 100) {          /* ~2 s of idle → exit */
-        int n = process_one(in, out);
+    /* Longer idle tolerance for stress runs that pause between bursts. */
+    while (idle_rounds < 500) {          /* ~5 s of idle → exit */
+        int n = process_one(in, out, quiet || total > 20);
         if (n > 0) {
             total += n;
             idle_rounds = 0;
             g_zo->bell.cpu_to_fpga = 0; /* clear doorbell */
+            if (total % 1000 == 0 && quiet)
+                printf("FPGA processed %d frames so far\n", total);
         } else if (n == 0) {
             idle_rounds++;
-            usleep(20000);
+            usleep(10000);
         } else {
             return 2;
         }
