@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #define _POSIX_C_SOURCE 200809L
 /*
- * Software model of the FPGA side.
+ * Software model of the FPGA side — high-rate host test.
+ *
+ * Busy-spins for work. Only a light pause after many empty spins so a
+ * timed host run can still exit, without multi-ms sleeps that destroy
+ * throughput (the old usleep(10000) idle path capped the demo at a few
+ * kmsg/s).
  *
  * On a real Zynq-7000 / Antminer S9 this logic lives in the PL:
  *   - AXI master reads slots from the ingress scratchpad,
@@ -9,10 +14,6 @@
  *   - writes results into the egress scratchpad,
  *   - advances the two rings (or asks a tiny soft-core / IRQ handler
  *     to call rb_release / rb_publish on its behalf).
- *
- * Here a normal Linux process plays the same role so the example can
- * be tested without hardware.  The ownership protocol and the RB_HW_*
- * hooks are identical.
  */
 #include "hw_port.h"
 #include "common.h"
@@ -30,7 +31,6 @@ struct zo_shared *g_zo;
 
 static struct zo_shared *map_shared(void)
 {
-    /* Wait until cpu_host has created the segment. */
     for (int i = 0; i < 100; i++) {
         int fd = shm_open(ZO_SHM_NAME, O_RDWR, 0666);
         if (fd >= 0) {
@@ -40,32 +40,24 @@ static struct zo_shared *map_shared(void)
             if (p != MAP_FAILED)
                 return (struct zo_shared *)p;
         }
-        usleep(100000);
+        usleep(50000);
     }
     fprintf(stderr, "fpga_stub: timed out waiting for %s\n", ZO_SHM_NAME);
     return NULL;
 }
 
-static int process_one(rb_t *in, rb_t *out, int quiet)
+static int process_one(rb_t *in, rb_t *out)
 {
     uint32_t idx = 0, len = 0;
     const void *obj = NULL;
     bool trunc = false;
 
     if (rb_consume(in, &idx, &obj, &len, &trunc) != RB_OK)
-        return 0; /* empty */
-
-    /* RB_HW_INVALIDATE_SLOT already ran inside rb_consume. */
+        return 0;
 
     uint32_t h = zo_fast_hash(obj, len);
     uint32_t seq = ++g_zo->bell.seq_out;
 
-    if (!quiet) {
-        printf("FPGA consumed ingress slot %u len=%u → hash=0x%08x seq=%u\n",
-               idx, len, h, seq);
-    }
-
-    /* Publish result into egress ring B. */
     uint32_t oidx = 0, ocap = 0;
     void *w = NULL;
     for (;;) {
@@ -73,7 +65,9 @@ static int process_one(rb_t *in, rb_t *out, int quiet)
         if (e == RB_OK)
             break;
         if (e == RB_ERR_FULL) {
-            usleep(20);
+            /* egress full: short spin — CPU host should be draining B */
+            for (volatile int i = 0; i < 64; i++)
+                ;
             continue;
         }
         fprintf(stderr, "FPGA rb_acquire(egress) failed\n");
@@ -93,10 +87,7 @@ static int process_one(rb_t *in, rb_t *out, int quiet)
         rb_release(in, idx);
         return -1;
     }
-    /* RB_HW_FLUSH_SLOT + RB_HW_NOTIFY_DEVICE already ran.
-     * Also raise the CPU-visible doorbell (stand-in for IRQ). */
     g_zo->bell.fpga_to_cpu = 1u;
-
     rb_release(in, idx);
     return 1;
 }
@@ -104,10 +95,9 @@ static int process_one(rb_t *in, rb_t *out, int quiet)
 int main(int argc, char **argv)
 {
     int quiet = 0;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i)
         if (!strcmp(argv[i], "-q"))
             quiet = 1;
-    }
 
     printf("zynq_offload fpga_stub — waiting for shared region\n");
     g_zo = map_shared();
@@ -116,23 +106,27 @@ int main(int argc, char **argv)
 
     rb_t *in  = zo_ring_a(g_zo);
     rb_t *out = zo_ring_b(g_zo);
-
-    printf("FPGA stub ready — processing until idle for a while\n");
+    printf("FPGA stub ready (busy-spin)\n");
 
     int total = 0;
-    int idle_rounds = 0;
-    /* Longer idle tolerance for stress runs that pause between bursts. */
-    while (idle_rounds < 500) {          /* ~5 s of idle → exit */
-        int n = process_one(in, out, quiet || total > 20);
+    int idle_spins = 0;
+    /* many empty spins ≈ a few seconds of true idle before exit */
+    const int idle_exit = 200000000;
+
+    while (idle_spins < idle_exit) {
+        int n = process_one(in, out);
         if (n > 0) {
             total += n;
-            idle_rounds = 0;
-            g_zo->bell.cpu_to_fpga = 0; /* clear doorbell */
-            if (total % 1000 == 0 && quiet)
+            idle_spins = 0;
+            g_zo->bell.cpu_to_fpga = 0;
+            if (!quiet && (total % 100000) == 0)
                 printf("FPGA processed %d frames so far\n", total);
         } else if (n == 0) {
-            idle_rounds++;
-            usleep(10000);
+            idle_spins++;
+            if ((idle_spins & 0xfff) == 0) {
+                for (volatile int i = 0; i < 32; i++)
+                    ;
+            }
         } else {
             return 2;
         }
