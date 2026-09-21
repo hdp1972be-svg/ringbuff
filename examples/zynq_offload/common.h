@@ -30,6 +30,7 @@ struct zo_result {
     uint32_t hash;
     uint32_t in_len;
     char     tag[4];   /* "HASH" */
+    uint64_t compute_ns; /* FPGA-side processing time */
 };
 
 struct zo_doorbells {
