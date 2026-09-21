@@ -599,7 +599,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    double t0 = now_sec();
+    t0 = now_sec();
     double t_end = t0 + duration;
     uint64_t published = 0, dropped = 0, full_hits = 0, attempted = 0;
     int got_live = 0;
