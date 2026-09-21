@@ -24,11 +24,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -421,6 +424,7 @@ int main(int argc, char **argv)
     int verbose = 0;
     int have_n = 0;
     long pace_us = 0;
+    struct host_snapshot host_start, host_end;
 
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc)
@@ -507,6 +511,9 @@ int main(int argc, char **argv)
         }
     }
 
+    host_print_identity();
+    host_snapshot_take(&host_start);
+
     printf("zynq_offload cpu_host\n");
     printf("  capacity=%u slots=%u slot_size=%u payload=%u mode=%s pace_us=%ld dump=%s\n",
            capacity, slots, slot_size, msg_size,
@@ -582,6 +589,8 @@ int main(int argc, char **argv)
 
         g_zo->cfg.ready = 0;
         free(payload);
+        host_snapshot_take(&host_end);
+        host_print_delta(&host_start, &host_end, now_sec() - t0);
         free(g_send_ns);
         free(g_lat_samples_ns);
         return 0;
@@ -719,6 +728,9 @@ int main(int argc, char **argv)
                t_pub > 0 ? (double)published / t_pub : consumer_rate);
     }
     printf("================================\n");
+
+    host_snapshot_take(&host_end);
+    host_print_delta(&host_start, &host_end, t_total);
 
     g_zo->cfg.ready = 0;
     free(payload);
