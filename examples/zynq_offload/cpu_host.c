@@ -404,7 +404,15 @@ int main(int argc, char **argv)
     else
         printf("  duration=%.1fs\n", duration);
 
-    shm_unlink(ZO_SHM_NAME);
+    /*
+     * Do not shm_unlink() here.  Another process (fpga_stub or, on the
+     * target, the FPGA-side mapping) may already have this object mapped.
+     * Unlinking removes the name and lets shm_open(O_CREAT) create a new
+     * object, leaving the peer attached to the old one.
+     *
+     * Reusing the named object is safe because init_rings() completely
+     * reinitializes the shared ring state before setting cfg.ready = 1.
+     */
     g_zo = map_shared(1);
     if (!g_zo)
         return 1;
