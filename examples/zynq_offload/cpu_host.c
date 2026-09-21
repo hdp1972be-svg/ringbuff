@@ -21,6 +21,7 @@
  */
 #include "hw_port.h"
 #include "common.h"
+#include "host_monitor.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -331,7 +332,6 @@ static int run_roundtrip(rb_t *ring, const void *payload, uint32_t payload_len,
                          uint64_t limit, double duration, int have_n)
 {
     uint64_t completed = 0, full_hits = 0;
-    double t0 = now_sec();
     double t_end = t0 + duration;
 
     for (;;) {
@@ -425,6 +425,7 @@ int main(int argc, char **argv)
     int have_n = 0;
     long pace_us = 0;
     struct host_snapshot host_start, host_end;
+    double t0;
 
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc)
@@ -511,8 +512,6 @@ int main(int argc, char **argv)
         }
     }
 
-    host_print_identity();
-    host_snapshot_take(&host_start);
 
     printf("zynq_offload cpu_host\n");
     printf("  capacity=%u slots=%u slot_size=%u payload=%u mode=%s pace_us=%ld dump=%s\n",
@@ -553,6 +552,10 @@ int main(int argc, char **argv)
     }
 
     sleep_us(150000);
+
+    host_print_identity();
+    t0 = now_sec();
+    host_snapshot_take(&host_start);
 
     if (g_roundtrip) {
         int rt = run_roundtrip(zo_ring_a(g_zo), payload, msg_size,
