@@ -81,7 +81,7 @@ jobs:
           m = re.search(r'load average: start ([0-9.]+)  end ([0-9.]+)', t)
           la,lb = m.groups() if m else ('','')
           print('\t'.join([run_no,mode,size,one(r'roundtrip done: completed=(\d+)'),one(r'serialized RTT rate=([0-9.]+)'),ls,mn,p10,p50,p90,p99,p999,avg,mx,ca,one(r'elapsed: ([0-9.]+) s'),one(r'aggregate CPU busy: ([0-9.]+)%'),la,lb,one(r'avg sampled 1m load: ([0-9.]+)')]))
-PY
+          PY
           }
 
           for mode in baseline pinned fifo; do
@@ -102,7 +102,7 @@ PY
           with Path('benchmark-results/results.tsv').open(newline='') as f:
               rows = list(csv.DictReader(f, delimiter='\t'))
           Path('benchmark-results/results.json').write_text(json.dumps(rows, indent=2) + '\n')
-PY
+          PY
 
       - name: Publish summary
         if: always()
