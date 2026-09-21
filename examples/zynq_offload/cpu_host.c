@@ -307,7 +307,7 @@ static int drain_results(rb_t *ring, int expected)
         idle = 0;
         if (len >= sizeof(struct zo_result)) {
             got++;
-            if (g_dump || g_latency || g_roundtrip) {
+            if (g_dump || g_latency) {
                 const struct zo_result *r = (const struct zo_result *)obj;
                 uint64_t ts = now_ns();
                 uint64_t send = 0;
@@ -328,44 +328,6 @@ static int run_roundtrip(rb_t *ring, const void *payload, uint32_t payload_len,
                          uint64_t limit, double duration, int have_n)
 {
     uint64_t completed = 0, full_hits = 0;
-    if (g_roundtrip) {
-        if (!have_n) {
-            /* -R is serialized; duration controls the number of round trips. */
-        }
-        int rt = run_roundtrip(zo_ring_a(g_zo), payload, msg_size,
-                               total, duration, have_n);
-        if (rt < 0)
-            return 1;
-        if (g_lat_count > 0) {
-            qsort(g_lat_samples_ns, g_lat_count, sizeof(*g_lat_samples_ns), cmp_u64);
-            printf("\\n=== Round-trip latency (CPU -> FPGA -> CPU) ===\\n");
-            printf("samples=%llu  min=%.3f µs  p10=%.3f µs  p50=%.3f µs\\n",
-                   (unsigned long long)g_lat_count,
-                   (double)g_lat_min_ns / 1000.0,
-                   (double)latency_percentile(10.0) / 1000.0,
-                   (double)latency_percentile(50.0) / 1000.0);
-            printf("p90=%.3f µs  p99=%.3f µs  p99.9=%.3f µs\\n",
-                   (double)latency_percentile(90.0) / 1000.0,
-                   (double)latency_percentile(99.0) / 1000.0,
-                   (double)latency_percentile(99.9) / 1000.0);
-            printf("avg=%.3f µs  max=%.3f µs\\n",
-                   (double)g_lat_sum_ns / (double)g_lat_count / 1000.0,
-                   (double)g_lat_max_ns / 1000.0);
-            printf("\\n=== FPGA stub compute (FNV hash only) ===\\n");
-            printf("samples=%llu  min=%.3f µs  avg=%.3f µs  max=%.3f µs\\n",
-                   (unsigned long long)g_rt_compute_samples,
-                   (double)g_rt_compute_min_ns / 1000.0,
-                   (double)g_rt_compute_sum_ns / (double)g_rt_compute_samples / 1000.0,
-                   (double)g_rt_compute_max_ns / 1000.0);
-            printf("===========================================\\n");
-        }
-        g_zo->cfg.ready = 0;
-        free(payload);
-        free(g_send_ns);
-        free(g_lat_samples_ns);
-        return 0;
-    }
-
     double t0 = now_sec();
     double t_end = t0 + duration;
 
@@ -396,30 +358,30 @@ static int run_roundtrip(rb_t *ring, const void *payload, uint32_t payload_len,
         uint64_t end = now_ns();
         const struct zo_result *r = (const struct zo_result *)obj;
         if (len < sizeof(*r) || r->seq != seq) {
-            fprintf(stderr, "roundtrip: bad response seq=%u expected=%u len=%u\\n",
-                    r->seq, seq, len);
+            fprintf(stderr, "roundtrip: bad response seq=%u expected=%u len=%u\n",
+                    len >= sizeof(*r) ? r->seq : 0u, seq, len);
             rb_release(zo_ring_b(g_zo), idx);
             return -1;
         }
 
         (void)latency_record(end - start);
-        if (r->compute_ns < (end - start))
-            g_rt_compute_sum_ns += r->compute_ns;
+        g_rt_compute_sum_ns += r->compute_ns;
         if (r->compute_ns < g_rt_compute_min_ns)
             g_rt_compute_min_ns = r->compute_ns;
         if (r->compute_ns > g_rt_compute_max_ns)
             g_rt_compute_max_ns = r->compute_ns;
         g_rt_compute_samples++;
+
         rb_release(zo_ring_b(g_zo), idx);
         completed++;
     }
 
     double elapsed = now_sec() - t0;
-    printf("roundtrip done: completed=%llu full_hits=%llu t=%.3fs\\n",
+    printf("roundtrip done: completed=%llu full_hits=%llu t=%.3fs\n",
            (unsigned long long)completed, (unsigned long long)full_hits, elapsed);
-    printf("  serialized RTT rate=%.0f transactions/s\\n",
+    printf("  serialized RTT rate=%.0f transactions/s\n",
            elapsed > 0.0 ? (double)completed / elapsed : 0.0);
-    return (int)completed;
+    return completed == (uint64_t)(int)completed ? (int)completed : -1;
 }
 
 static void usage(const char *prog)
@@ -492,6 +454,8 @@ int main(int argc, char **argv)
             g_dump = 1;
         else if (!strcmp(argv[i], "-L"))
             g_latency = 1;
+        else if (!strcmp(argv[i], "-R"))
+            g_roundtrip = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
             return 0;
@@ -532,8 +496,10 @@ int main(int argc, char **argv)
     }
 
     int demo = (have_n && total <= 5);
+    if (g_roundtrip)
+        demo = 0; /* RTT benchmark always uses the fixed binary payload. */
 
-    if (g_dump || g_latency) {
+    if (g_dump || g_latency || g_roundtrip) {
         g_send_ns = (uint64_t *)calloc(DUMP_TS_SLOTS, sizeof(uint64_t));
         if (!g_send_ns) {
             perror("calloc send_ts");
@@ -546,7 +512,8 @@ int main(int argc, char **argv)
            capacity, slots, slot_size, msg_size,
            drop_mode ? "drop" : "wait", pace_us,
            g_dump ? "on" : "off");
-    printf("  latency=%s\n", g_latency ? "on" : "off");
+    printf("  latency=%s  roundtrip=%s\n",
+           g_latency ? "on" : "off", g_roundtrip ? "on" : "off");
     if (have_n)
         printf("  limit=%llu\n", (unsigned long long)total);
     else
@@ -579,6 +546,46 @@ int main(int argc, char **argv)
     }
 
     sleep_us(150000);
+
+    if (g_roundtrip) {
+        int rt = run_roundtrip(zo_ring_a(g_zo), payload, msg_size,
+                               total, duration, have_n);
+        if (rt < 0)
+            return 1;
+
+        if (g_lat_count > 0) {
+            qsort(g_lat_samples_ns, g_lat_count,
+                  sizeof(*g_lat_samples_ns), cmp_u64);
+            printf("\n=== Round-trip latency (CPU -> FPGA -> CPU) ===\n");
+            printf("samples=%llu  min=%.3f us  p10=%.3f us  p50=%.3f us\n",
+                   (unsigned long long)g_lat_count,
+                   (double)g_lat_min_ns / 1000.0,
+                   (double)latency_percentile(10.0) / 1000.0,
+                   (double)latency_percentile(50.0) / 1000.0);
+            printf("p90=%.3f us  p99=%.3f us  p99.9=%.3f us\n",
+                   (double)latency_percentile(90.0) / 1000.0,
+                   (double)latency_percentile(99.0) / 1000.0,
+                   (double)latency_percentile(99.9) / 1000.0);
+            printf("avg=%.3f us  max=%.3f us\n",
+                   (double)g_lat_sum_ns / (double)g_lat_count / 1000.0,
+                   (double)g_lat_max_ns / 1000.0);
+
+            printf("\n=== FPGA stub compute (FNV hash only) ===\n");
+            printf("samples=%llu  min=%.3f us  avg=%.3f us  max=%.3f us\n",
+                   (unsigned long long)g_rt_compute_samples,
+                   (double)g_rt_compute_min_ns / 1000.0,
+                   (double)g_rt_compute_sum_ns /
+                       (double)g_rt_compute_samples / 1000.0,
+                   (double)g_rt_compute_max_ns / 1000.0);
+            printf("===========================================\n");
+        }
+
+        g_zo->cfg.ready = 0;
+        free(payload);
+        free(g_send_ns);
+        free(g_lat_samples_ns);
+        return 0;
+    }
 
     double t0 = now_sec();
     double t_end = t0 + duration;
