@@ -50,7 +50,13 @@ static int process_one(rb_t *in, rb_t *out)
     if (rb_consume(in, &idx, &obj, &len, &trunc) != RB_OK)
         return 0;
 
+    uint64_t compute_start = 0, compute_end = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    compute_start = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     uint32_t h = zo_fast_hash(obj, len);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    compute_end = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     uint32_t seq = ++g_zo->bell.seq_out;
 
     uint32_t oidx = 0, ocap = 0;
@@ -72,6 +78,7 @@ static int process_one(rb_t *in, rb_t *out)
     r->seq = seq;
     r->hash = h;
     r->in_len = len;
+    r->compute_ns = compute_end - compute_start;
     memcpy(r->tag, "HASH", 4);
 
     if (rb_publish(out, oidx, (uint32_t)sizeof *r) != RB_OK) {
