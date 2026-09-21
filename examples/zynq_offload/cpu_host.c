@@ -16,6 +16,8 @@
  *   -v          verbose (seq only)
  *   -D          dump packets: green ingress (send) + red egress (recv)
  *               with high-res timestamps and per-packet latency deltas
+ *   -L          collect latency samples and print percentile statistics
+ *               without dumping packets (recommended for benchmarks)
  */
 #include "hw_port.h"
 #include "common.h"
@@ -35,11 +37,53 @@ struct zo_shared *g_zo;
 /* Packet dump state (only allocated / used when -D is set) */
 #define DUMP_TS_SLOTS  4096u
 static int g_dump;
+static int g_latency;
 static uint64_t *g_send_ns;          /* indexed by seq % DUMP_TS_SLOTS */
+static uint64_t *g_lat_samples_ns;
+static size_t g_lat_samples_cap;
 static uint64_t g_lat_sum_ns;
 static uint64_t g_lat_min_ns = UINT64_MAX;
 static uint64_t g_lat_max_ns;
 static uint64_t g_lat_count;
+
+static int latency_record(uint64_t delta)
+{
+    if (g_lat_count == g_lat_samples_cap) {
+        size_t new_cap = g_lat_samples_cap ? g_lat_samples_cap * 2u : 4096u;
+        uint64_t *p = (uint64_t *)realloc(g_lat_samples_ns,
+                                          new_cap * sizeof(*p));
+        if (!p)
+            return -1;
+        g_lat_samples_ns = p;
+        g_lat_samples_cap = new_cap;
+    }
+    g_lat_samples_ns[g_lat_count++] = delta;
+    g_lat_sum_ns += delta;
+    if (delta < g_lat_min_ns)
+        g_lat_min_ns = delta;
+    if (delta > g_lat_max_ns)
+        g_lat_max_ns = delta;
+    return 0;
+}
+
+static int cmp_u64(const void *a, const void *b)
+{
+    const uint64_t x = *(const uint64_t *)a;
+    const uint64_t y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
+static uint64_t latency_percentile(double pct)
+{
+    if (g_lat_count == 0)
+        return 0;
+    size_t rank = (size_t)((pct / 100.0) * (double)g_lat_count);
+    if (rank == 0)
+        rank = 1;
+    if (rank > g_lat_count)
+        rank = g_lat_count;
+    return g_lat_samples_ns[rank - 1];
+}
 
 static uint64_t now_ns(void)
 {
@@ -124,12 +168,7 @@ static void dump_egress(const struct zo_result *r, uint32_t len, uint64_t ts_ns,
     if (send_ns) {
         printf("  Δ=%llu ns (%.3f µs)",
                (unsigned long long)delta, (double)delta / 1000.0);
-        g_lat_sum_ns += delta;
-        if (delta < g_lat_min_ns)
-            g_lat_min_ns = delta;
-        if (delta > g_lat_max_ns)
-            g_lat_max_ns = delta;
-        g_lat_count++;
+        (void)latency_record(delta);
     }
     printf("\033[0m\n");
     if (len > sizeof(struct zo_result)) {
@@ -263,13 +302,16 @@ static int drain_results(rb_t *ring, int expected)
         idle = 0;
         if (len >= sizeof(struct zo_result)) {
             got++;
-            if (g_dump) {
+            if (g_dump || g_latency) {
                 const struct zo_result *r = (const struct zo_result *)obj;
                 uint64_t ts = now_ns();
                 uint64_t send = 0;
                 if (g_send_ns)
                     send = g_send_ns[r->seq % DUMP_TS_SLOTS];
-                dump_egress(r, len, ts, send);
+                if (g_dump)
+                    dump_egress(r, len, ts, send);
+                else if (send && ts >= send)
+                    (void)latency_record(ts - send);
             }
         }
         rb_release(ring, idx);
@@ -386,7 +428,7 @@ int main(int argc, char **argv)
 
     int demo = (have_n && total <= 5);
 
-    if (g_dump) {
+    if (g_dump || g_latency) {
         g_send_ns = (uint64_t *)calloc(DUMP_TS_SLOTS, sizeof(uint64_t));
         if (!g_send_ns) {
             perror("calloc send_ts");
@@ -399,6 +441,7 @@ int main(int argc, char **argv)
            capacity, slots, slot_size, msg_size,
            drop_mode ? "drop" : "wait", pace_us,
            g_dump ? "on" : "off");
+    printf("  latency=%s\n", g_latency ? "on" : "off");
     if (have_n)
         printf("  limit=%llu\n", (unsigned long long)total);
     else
@@ -453,13 +496,16 @@ int main(int argc, char **argv)
             while (rb_consume(zo_ring_b(g_zo), &idx, &obj, &len, &trunc) == RB_OK) {
                 if (len >= sizeof(struct zo_result)) {
                     got_live++;
-                    if (g_dump) {
+                    if (g_dump || g_latency) {
                         const struct zo_result *r = (const struct zo_result *)obj;
                         uint64_t ts = now_ns();
                         uint64_t send = 0;
                         if (g_send_ns)
                             send = g_send_ns[r->seq % DUMP_TS_SLOTS];
-                        dump_egress(r, len, ts, send);
+                        if (g_dump)
+                            dump_egress(r, len, ts, send);
+                        else if (send && ts >= send)
+                            (void)latency_record(ts - send);
                     }
                 }
                 rb_release(zo_ring_b(g_zo), idx);
@@ -527,11 +573,20 @@ int main(int argc, char **argv)
     printf("done: got %d / %llu (live=%d final=%d) total=%.3fs\n",
            got, (unsigned long long)published, got_live, got_extra, t_total);
 
-    if (g_dump && g_lat_count > 0) {
+    if ((g_dump || g_latency) && g_lat_count > 0) {
+        if (g_latency && !g_dump)
+            qsort(g_lat_samples_ns, g_lat_count, sizeof(*g_lat_samples_ns), cmp_u64);
         printf("\n=== Latency (ingress → egress) ===\n");
-        printf("samples=%llu  min=%.3f µs  avg=%.3f µs  max=%.3f µs\n",
+        printf("samples=%llu  min=%.3f µs  p10=%.3f µs  p50=%.3f µs\n",
                (unsigned long long)g_lat_count,
                (double)g_lat_min_ns / 1000.0,
+               (double)latency_percentile(10.0) / 1000.0,
+               (double)latency_percentile(50.0) / 1000.0);
+        printf("p90=%.3f µs  p99=%.3f µs  p99.9=%.3f µs\n",
+               (double)latency_percentile(90.0) / 1000.0,
+               (double)latency_percentile(99.0) / 1000.0,
+               (double)latency_percentile(99.9) / 1000.0);
+        printf("avg=%.3f µs  max=%.3f µs\n",
                (double)g_lat_sum_ns / (double)g_lat_count / 1000.0,
                (double)g_lat_max_ns / 1000.0);
         printf("==================================\n");
@@ -556,5 +611,6 @@ int main(int argc, char **argv)
     g_zo->cfg.ready = 0;
     free(payload);
     free(g_send_ns);
+    free(g_lat_samples_ns);
     return (got == (int)published) ? 0 : 2;
 }
