@@ -75,7 +75,8 @@ static void read_loadavg(struct host_snapshot *s)
     FILE *f = fopen("/proc/loadavg", "r");
     s->load1 = s->load5 = s->load15 = 0.0;
     if (f) {
-        (void)fscanf(f, "%lf %lf %lf", &s->load1, &s->load5, &s->load15);
+        if (fscanf(f, "%lf %lf %lf", &s->load1, &s->load5, &s->load15) != 3)
+            s->load1 = s->load5 = s->load15 = 0.0;
         fclose(f);
     }
 }
