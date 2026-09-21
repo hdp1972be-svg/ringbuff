@@ -51,7 +51,7 @@ else()
 endif()
 
 # Zynq-7000 / Antminer S9 dual-ring offload (CPU <-> FPGA model)
-add_executable(zynq_cpu_host zynq_offload/cpu_host.c)
+add_executable(zynq_cpu_host zynq_offload/cpu_host.c zynq_offload/host_monitor.c)
 target_include_directories(zynq_cpu_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/zynq_offload)
 target_link_libraries(zynq_cpu_host PRIVATE rb rt)
 
