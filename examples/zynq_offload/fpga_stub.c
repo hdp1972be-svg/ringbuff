@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
-#define _POSIX_C_SOURCE 200809L
+#define _POSIX_C_SOURCE 199309L
+#include <time.h>
 /*
  * FPGA stub — high-rate FNV hash path.
  * Waits for host zo_runtime_cfg (capacity/slots/slot_size), then busy-spins.
@@ -29,7 +30,12 @@ static struct zo_shared *map_shared(void)
             if (p != MAP_FAILED)
                 return (struct zo_shared *)p;
         }
-        usleep(20000);
+
+        struct timespec ts = {
+            .tv_sec = 0,
+            .tv_nsec = 20 * 1000 * 1000L
+        };
+        nanosleep(&ts, NULL);
     }
     fprintf(stderr, "fpga_stub: timed out waiting for %s\n", ZO_SHM_NAME);
     return NULL;
@@ -93,8 +99,14 @@ int main(int argc, char **argv)
     for (int i = 0; i < 10000; i++) {
         if (g_zo->cfg.ready && g_zo->cfg.magic == ZO_CFG_MAGIC)
             break;
-        usleep(1000);
+
+        struct timespec ts = {
+            .tv_sec = 0,
+            .tv_nsec = 1000000L
+        };
+        nanosleep(&ts, NULL);
     }
+
     if (!g_zo->cfg.ready || g_zo->cfg.magic != ZO_CFG_MAGIC) {
         fprintf(stderr, "fpga_stub: host never published runtime cfg\n");
         return 1;
