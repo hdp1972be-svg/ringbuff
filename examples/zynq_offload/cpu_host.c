@@ -387,6 +387,8 @@ int main(int argc, char **argv)
             verbose = 1;
         else if (!strcmp(argv[i], "-D"))
             g_dump = 1;
+        else if (!strcmp(argv[i], "-L"))
+            g_latency = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
             return 0;
