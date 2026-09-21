@@ -29,14 +29,14 @@ jobs:
       - name: Configure and build
         run: |
           set -eux
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRB_BUILD_EXAMPLES=ON
           cmake --build build --target zynq_cpu_host zynq_fpga_stub -j2
 
       - name: Run benchmark matrix
         run: |
           set -u
           mkdir -p benchmark-results/raw
-          printf '%s\n' 'run\tmode\tpayload_bytes\tcompleted\trt_rate_sps\tlat_samples\tmin_us\tp10_us\tp50_us\tp90_us\tp99_us\tp99_9_us\tavg_us\tmax_us\tcompute_avg_us\thost_elapsed_s\thost_cpu_busy_pct\tload1_start\tload1_end\tload1_avg' > benchmark-results/results.tsv
+          printf 'run\tmode\tpayload_bytes\tcompleted\trt_rate_sps\tlat_samples\tmin_us\tp10_us\tp50_us\tp90_us\tp99_us\tp99_9_us\tavg_us\tmax_us\tcompute_avg_us\thost_elapsed_s\thost_cpu_busy_pct\tload1_start\tload1_end\tload1_avg\n' > benchmark-results/results.tsv
 
           run_one() {
             run_no="$1"
@@ -48,7 +48,7 @@ jobs:
             case "$mode" in
               baseline) ;;
               pinned) host_prefix=(taskset -c 0); stub_prefix=(taskset -c 1) ;;
-              fifo) host_prefix=(sudo -n chrt -f 80 taskset -c 0); stub_prefix=(taskset -c 1) ;;
+              fifo) host_prefix=(taskset -c 0 chrt -f 80); stub_prefix=(taskset -c 1) ;;
             esac
 
             rm -f /dev/shm/zynq_offload || true
