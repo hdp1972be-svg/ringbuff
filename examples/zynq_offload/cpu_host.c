@@ -332,6 +332,7 @@ static int run_roundtrip(rb_t *ring, const void *payload, uint32_t payload_len,
                          uint64_t limit, double duration, int have_n)
 {
     uint64_t completed = 0, full_hits = 0;
+    double t0 = now_sec();
     double t_end = t0 + duration;
 
     for (;;) {
