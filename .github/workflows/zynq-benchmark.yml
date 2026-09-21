@@ -66,21 +66,21 @@ jobs:
             if [ "$rc" -ne 0 ]; then return "$rc"; fi
 
             python3 - "$prefix.log" "$run_no" "$mode" "$size" >> benchmark-results/results.tsv <<'PY'
-import re, sys
-p, run_no, mode, size = sys.argv[1:]
-t = open(p, encoding='utf-8', errors='replace').read()
-def one(pat):
-    m = re.search(pat, t, re.M)
-    return m.group(1) if m else ''
-m = re.search(r'samples=(\d+)  min=([0-9.]+) us  p10=([0-9.]+) us  p50=([0-9.]+) us', t)
-ls, mn, p10, p50 = m.groups() if m else ('','','','')
-m = re.search(r'p90=([0-9.]+) us  p99=([0-9.]+) us  p99.9=([0-9.]+) us\navg=([0-9.]+) us  max=([0-9.]+) us', t)
-p90,p99,p999,avg,mx = m.groups() if m else ('','','','','')
-m = re.search(r'=== FPGA stub compute.*?samples=(\d+)  min=([0-9.]+) us  avg=([0-9.]+) us  max=([0-9.]+) us', t, re.S)
-ca = m.group(3) if m else ''
-m = re.search(r'load average: start ([0-9.]+)  end ([0-9.]+)', t)
-la,lb = m.groups() if m else ('','')
-print('\t'.join([run_no,mode,size,one(r'roundtrip done: completed=(\d+)'),one(r'serialized RTT rate=([0-9.]+)'),ls,mn,p10,p50,p90,p99,p999,avg,mx,ca,one(r'elapsed: ([0-9.]+) s'),one(r'aggregate CPU busy: ([0-9.]+)%'),la,lb,one(r'avg sampled 1m load: ([0-9.]+)')]))
+          import re, sys
+          p, run_no, mode, size = sys.argv[1:]
+          t = open(p, encoding='utf-8', errors='replace').read()
+          def one(pat):
+              m = re.search(pat, t, re.M)
+              return m.group(1) if m else ''
+          m = re.search(r'samples=(\d+)  min=([0-9.]+) us  p10=([0-9.]+) us  p50=([0-9.]+) us', t)
+          ls, mn, p10, p50 = m.groups() if m else ('','','','')
+          m = re.search(r'p90=([0-9.]+) us  p99=([0-9.]+) us  p99.9=([0-9.]+) us\navg=([0-9.]+) us  max=([0-9.]+) us', t)
+          p90,p99,p999,avg,mx = m.groups() if m else ('','','','','')
+          m = re.search(r'=== FPGA stub compute.*?samples=(\d+)  min=([0-9.]+) us  avg=([0-9.]+) us  max=([0-9.]+) us', t, re.S)
+          ca = m.group(3) if m else ''
+          m = re.search(r'load average: start ([0-9.]+)  end ([0-9.]+)', t)
+          la,lb = m.groups() if m else ('','')
+          print('\t'.join([run_no,mode,size,one(r'roundtrip done: completed=(\d+)'),one(r'serialized RTT rate=([0-9.]+)'),ls,mn,p10,p50,p90,p99,p999,avg,mx,ca,one(r'elapsed: ([0-9.]+) s'),one(r'aggregate CPU busy: ([0-9.]+)%'),la,lb,one(r'avg sampled 1m load: ([0-9.]+)')]))
 PY
           }
 
@@ -97,11 +97,11 @@ PY
       - name: Create JSON results
         run: |
           python3 - <<'PY'
-import csv, json
-from pathlib import Path
-with Path('benchmark-results/results.tsv').open(newline='') as f:
-    rows = list(csv.DictReader(f, delimiter='\t'))
-Path('benchmark-results/results.json').write_text(json.dumps(rows, indent=2) + '\n')
+          import csv, json
+          from pathlib import Path
+          with Path('benchmark-results/results.tsv').open(newline='') as f:
+              rows = list(csv.DictReader(f, delimiter='\t'))
+          Path('benchmark-results/results.json').write_text(json.dumps(rows, indent=2) + '\n')
 PY
 
       - name: Publish summary
