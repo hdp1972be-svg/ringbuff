@@ -18,7 +18,7 @@ consume: tail -> entries[] load -> slot calculation
 
 ## Constraints
 
-`RB_DIRECT_SLOT_MAP=1` is accepted only when:
+`RB_DIRECT_SLOT_MAP=1` and `RB_DIRECT_SLOT_MAP=2` are accepted only when:
 
 - `RB_USE_POINTERS == 0`
 - `RB_PER_SLOT_LAP == 0`
@@ -38,12 +38,12 @@ The `entries[]` allocation is deliberately retained and `rb_size()` is unchanged
 
 ## Validation
 
-Build identical benchmark configurations with `RB_DIRECT_SLOT_MAP=0` and `RB_DIRECT_SLOT_MAP=1`.
+Build identical benchmark configurations with `RB_DIRECT_SLOT_MAP=0`, `RB_DIRECT_SLOT_MAP=1`, and `RB_DIRECT_SLOT_MAP=2`.\n\nMode 2 is the control variant: it derives the slot directly like mode 1, but performs an explicit `volatile` load from `entries[tail & mask]` in `rb_consume()` and discards the value. This preserves the metadata-load cost without putting the loaded value in the slot-address dependency chain. Comparing modes 1 and 2 therefore tests whether the removed metadata load itself is responsible for the cache/latency effect. Mode 2 does not store to `entries[]` during publish, so it isolates the consumer-side metadata load.
 
 Then inspect the generated assembly:
 
 - `rb_publish_ex` should no longer contain the `entries[]` store.
-- `rb_consume` should no longer contain the dependent `entries[]` load.
+- `rb_consume` should no longer contain the dependent `entries[]` load in mode 1.\n- Mode 2 should contain an explicit metadata load, but its result should not determine the scratch address.
 - `rb_acquire` should remain functionally unchanged.
 
 The benchmark result should be compared against the dense baseline rather than against the earlier sparse-layout experiment. The sparse experiment changes cache footprint; this experiment specifically tests removal of the metadata dependency.
