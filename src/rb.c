@@ -48,7 +48,7 @@ struct rb_s {
     uint32_t cached_head, consumer_active, consumer_slot, low_d_latch, low_e_latch;
 #endif
     uint32_t capacity, limit, mask, slots, slots_mask, slot_size, slot_stride, low_d, low_e;
-    uint32_t slot_stride_shift;
+    uint32_t slot_stride_shift, cursor_mask;
     rb_oversize_policy_t oversize_policy;
     size_t producer_stack_size, consumer_stack_size;
     size_t scratch_off;
@@ -74,16 +74,14 @@ static inline bool below_low(uint32_t count, uint32_t limit, uint32_t percent) {
 }
 static inline uint32_t slot_index_for(const rb_t *rb, uint32_t pos) {
 #if RB_CURSOR_ENCODES_SCRATCH
-    return pos / rb->slot_stride;
+    return pos >> rb->slot_stride_shift;
 #else
     return rb->slots_mask ? (pos & rb->slots_mask) : (pos % rb->slots);
 #endif
 }
 static inline uint32_t cursor_advance(const rb_t *rb, uint32_t pos) {
 #if RB_CURSOR_ENCODES_SCRATCH
-    uint32_t next = pos + rb->slot_stride;
-    uint32_t ring_bytes = rb->slots * rb->slot_stride;
-    return next >= ring_bytes ? next - ring_bytes : next;
+    return (pos + rb->slot_stride) & rb->cursor_mask;
 #else
     (void)rb;
     return pos + 1u;
@@ -92,7 +90,7 @@ static inline uint32_t cursor_advance(const rb_t *rb, uint32_t pos) {
 static inline uint32_t cursor_count(const rb_t *rb, uint32_t head, uint32_t tail) {
 #if RB_CURSOR_ENCODES_SCRATCH
     uint32_t delta = head >= tail ? head - tail : (UINT32_MAX - tail + 1u) + head;
-    return delta / rb->slot_stride;
+    return delta >> rb->slot_stride_shift;
 #else
     (void)rb;
     return head - tail;
@@ -203,6 +201,7 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     for (uint32_t v = stride; v > 1u; v >>= 1u)
         shift++;
     rb->slot_stride_shift = shift;
+    rb->cursor_mask = (uint32_t)((size_t)slots * stride - 1u);
 #endif
     size_t need = (size_t)slots * stride;
     if (scratch_size < need)
