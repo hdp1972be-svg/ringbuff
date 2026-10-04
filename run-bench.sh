@@ -84,6 +84,9 @@ EOF
 for mode in "${MODES[@]}"; do
     BUILD="$ROOT/build-bench-mode${mode}"
 
+    # Always configure from a clean build tree: no CMake/compiler cache.
+    rm -rf "$BUILD"
+
     echo
     echo "============================================================"
     echo " MODE $mode"
