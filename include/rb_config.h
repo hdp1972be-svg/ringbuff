@@ -54,6 +54,12 @@
 #define RB_PER_SLOT_LAP       0
 #endif
 
+/* 1 = encode the scratchpad byte offset directly in head/tail cursors.
+   Requires slots == capacity and a power-of-two slot stride. */
+#ifndef RB_CURSOR_ENCODES_SCRATCH
+#define RB_CURSOR_ENCODES_SCRATCH 0
+#endif
+
 /* 1 = compile stats (watermarks, counters) into the control block. */
 #ifndef RB_ENABLE_STATS
 #define RB_ENABLE_STATS       1
