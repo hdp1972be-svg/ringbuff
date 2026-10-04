@@ -163,7 +163,8 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
         return RB_ERR_INVAL;
 #if RB_RING_ENTRY_STRIDE
     if (!RB_IS_POW2(RB_RING_ENTRY_STRIDE) || RB_RING_ENTRY_STRIDE < sizeof(rb_entry_t) ||
-        RB_RING_ENTRY_STRIDE < RB_CACHE_LINE)
+        RB_RING_ENTRY_STRIDE < RB_CACHE_LINE ||
+        (uint64_t)capacity * RB_RING_ENTRY_STRIDE > UINT32_MAX)
         return RB_ERR_INVAL;
 #endif
     uint32_t slots = cfg->slots ? cfg->slots : RB_NUM_SLOTS;
