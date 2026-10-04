@@ -35,8 +35,10 @@
  *   2 = derive slot directly, but retain an explicit volatile entries[]
  *       load in rb_consume() to measure the cost of the metadata load
  *       without making it part of the slot-address dependency chain.
+ *   3 = retain the entries[] publish store and consume load, but derive
+ *       the slot directly; the consume load does not drive the address.
  *
- * Modes 1 and 2 require RB_USE_POINTERS=0 and runtime slots == capacity.
+ * Modes 1, 2, and 3 require RB_USE_POINTERS=0 and runtime slots == capacity.
  * entries[] storage is retained for ABI/layout in both experimental modes. */
 #ifndef RB_DIRECT_SLOT_MAP
 #define RB_DIRECT_SLOT_MAP    0
