@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(RB_USE_POINTERS "Use void* entries instead of uint32_t indices" OFF)
+option(RB_DIRECT_SLOT_MAP "Derive scratch slots directly when slots equal capacity" OFF)
 option(RB_SLOT_CACHELINE_PAD "Pad slot stride up to a cache line" OFF)
 option(RB_SINGLE_THREADED "Single-threaded / no atomics mode" OFF)
 option(RB_USE_ATOMICS "Use C11 <stdatomic.h>" ON)
@@ -31,6 +32,7 @@ target_compile_features(rb PUBLIC c_std_11)
 target_compile_definitions(rb PUBLIC
     RB_SLOT_SIZE=${RB_SLOT_SIZE} RB_NUM_SLOTS=${RB_NUM_SLOTS} RB_CAPACITY=${RB_CAPACITY} RB_CACHE_LINE=${RB_CACHE_LINE}
     $<$<BOOL:${RB_USE_POINTERS}>:RB_USE_POINTERS=1>
+    $<$<BOOL:${RB_DIRECT_SLOT_MAP}>:RB_DIRECT_SLOT_MAP=1>
     $<$<BOOL:${RB_SLOT_CACHELINE_PAD}>:RB_SLOT_CACHELINE_PAD=1>
     $<$<BOOL:${RB_SINGLE_THREADED}>:RB_SINGLE_THREADED=1>
     $<$<BOOL:${RB_USE_ATOMICS}>:RB_USE_ATOMICS=1>
