@@ -341,7 +341,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
 #if RB_RING_ENTRY_STRIDE
-    rb_entry_t *entry = (rb_entry_t *)((uint8_t *)rb->entries + head);
+    rb_entry_t *entry = (rb_entry_t *)((uint8_t *)rb->entries + (head & (rb->capacity * RB_RING_ENTRY_STRIDE - 1u)));
 #else
     rb_entry_t *entry = &rb->entries[head & rb->mask];
 #endif
@@ -451,7 +451,8 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
             return RB_ERR_EMPTY;
     }
 #if RB_RING_ENTRY_STRIDE
-    rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
+    rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries +
+                                             (tail & (rb->capacity * RB_RING_ENTRY_STRIDE - 1u)));
 #else
 #if RB_RING_ENTRY_STRIDE
     rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
