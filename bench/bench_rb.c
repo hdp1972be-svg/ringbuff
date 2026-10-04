@@ -248,7 +248,17 @@ int main(void) {
     printf("  mapping mode : %d (0=entries, 1=direct, 2=direct+metadata load)\\n", RB_DIRECT_SLOT_MAP);
     printf("\n");
 
-    const uint32_t iters = 2000000u;
+    const char *iters_env = getenv("RB_BENCH_ITERS");
+    uint32_t iters = 2000000u;
+    if (iters_env && *iters_env) {
+        char *end = NULL;
+        unsigned long value = strtoul(iters_env, &end, 10);
+        if (*end != '\\0' || value == 0 || value > UINT32_MAX) {
+            fprintf(stderr, "invalid RB_BENCH_ITERS: %s\\n", iters_env);
+            return 2;
+        }
+        iters = (uint32_t)value;
+    }
     const uint32_t sizes[] = { 64u, 256u, 2048u, 8192u };
     const uint32_t caps[]  = { 64u, 1024u };
 
