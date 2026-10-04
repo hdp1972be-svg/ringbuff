@@ -48,6 +48,7 @@ struct rb_s {
     uint32_t cached_head, consumer_active, consumer_slot, low_d_latch, low_e_latch;
 #endif
     uint32_t capacity, limit, mask, slots, slots_mask, slot_size, slot_stride, low_d, low_e;
+    uint32_t slot_stride_shift;
     rb_oversize_policy_t oversize_policy;
     size_t producer_stack_size, consumer_stack_size;
     size_t scratch_off;
@@ -71,8 +72,31 @@ static inline uint32_t slot_stride_for(uint32_t slot_size) {
 static inline bool below_low(uint32_t count, uint32_t limit, uint32_t percent) {
     return percent && (uint64_t)count * 100u < (uint64_t)limit * percent;
 }
-static inline uint32_t slot_index_for(const rb_t *rb, uint32_t head) {
-    return rb->slots_mask ? (head & rb->slots_mask) : (head % rb->slots);
+static inline uint32_t slot_index_for(const rb_t *rb, uint32_t pos) {
+#if RB_CURSOR_ENCODES_SCRATCH
+    return pos / rb->slot_stride;
+#else
+    return rb->slots_mask ? (pos & rb->slots_mask) : (pos % rb->slots);
+#endif
+}
+static inline uint32_t cursor_advance(const rb_t *rb, uint32_t pos) {
+#if RB_CURSOR_ENCODES_SCRATCH
+    uint32_t next = pos + rb->slot_stride;
+    uint32_t ring_bytes = rb->slots * rb->slot_stride;
+    return next >= ring_bytes ? next - ring_bytes : next;
+#else
+    (void)rb;
+    return pos + 1u;
+#endif
+}
+static inline uint32_t cursor_count(const rb_t *rb, uint32_t head, uint32_t tail) {
+#if RB_CURSOR_ENCODES_SCRATCH
+    uint32_t delta = head >= tail ? head - tail : (UINT32_MAX - tail + 1u) + head;
+    return delta / rb->slot_stride;
+#else
+    (void)rb;
+    return head - tail;
+#endif
 }
 static inline uint8_t *rb_scratch(rb_t *rb) {
     return (uint8_t *)rb + rb->scratch_off;
@@ -171,6 +195,15 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     if (((uintptr_t)scratch % need_align) != 0u)
         return RB_ERR_INVAL;
     uint32_t stride = slot_stride_for(slot_size);
+#if RB_CURSOR_ENCODES_SCRATCH
+    if (slots != capacity || !RB_IS_POW2(stride) ||
+        (size_t)slots * stride > (size_t)UINT32_MAX / 2u)
+        return RB_ERR_INVAL;
+    uint32_t shift = 0u;
+    for (uint32_t v = stride; v > 1u; v >>= 1u)
+        shift++;
+    rb->slot_stride_shift = shift;
+#endif
     size_t need = (size_t)slots * stride;
     if (scratch_size < need)
         return RB_ERR_INVAL;
@@ -250,11 +283,11 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
         count = pos - tail;
         if (count >= rb->limit) {
 #else
-    uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail, count = head - tail;
+    uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail, count = cursor_count(rb, head, tail);
     if (count >= rb->limit) {
         tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
         rb->cached_tail = tail;
-        count = head - tail;
+        count = cursor_count(rb, head, tail);
         if (count >= rb->limit) {
 #endif
 #if RB_ENABLE_STATS
@@ -318,7 +351,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
-    RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
+    RB_ATOMIC_STORE_REL(&rb->head, cursor_advance(rb, head));
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
      * Independent of the Linux futex/eventfd CPU wake path. */
@@ -345,7 +378,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     uint32_t tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
     rb->cached_tail = tail;
-    uint32_t count = (head + 1u) - tail;
+    uint32_t count = cursor_count(rb, RB_ATOMIC_LOAD_RLX(&rb->head), tail);
 #endif
 #if RB_ENABLE_STATS
     rb->stats.published++;
@@ -463,9 +496,9 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
     uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #else
     uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail);
-    RB_ATOMIC_STORE_REL(&rb->tail, tail + 1u);
+    RB_ATOMIC_STORE_REL(&rb->tail, cursor_advance(rb, tail));
     rb->consumer_active = 0u;
-    uint32_t head = rb->cached_head, new_count = head - (tail + 1u), old_count = new_count + 1u;
+    uint32_t head = rb->cached_head, new_count = cursor_count(rb, head, RB_ATOMIC_LOAD_RLX(&rb->tail)), old_count = new_count + 1u;
 #endif
 #if RB_ENABLE_STATS
     rb->stats.consumed++;
@@ -550,7 +583,7 @@ uint32_t rb_count(const rb_t *rb) {
     #if RB_PER_SLOT_LAP
     return RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) - RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
 #else
-    return RB_ATOMIC_LOAD_ACQ(&rb->head) - RB_ATOMIC_LOAD_ACQ(&rb->tail);
+    return cursor_count(rb, RB_ATOMIC_LOAD_ACQ(&rb->head), RB_ATOMIC_LOAD_ACQ(&rb->tail));
 #endif
 }
 uint32_t rb_capacity(const rb_t *rb) {
