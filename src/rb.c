@@ -151,6 +151,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     uint32_t slots = cfg->slots ? cfg->slots : RB_NUM_SLOTS;
     if (!slots)
         return RB_ERR_INVAL;
+#if RB_DIRECT_SLOT_MAP
+    if (RB_USE_POINTERS || RB_PER_SLOT_LAP || slots != capacity)
+        return RB_ERR_INVAL;
+#endif
     uint32_t slot_size = cfg->slot_size ? cfg->slot_size : RB_SLOT_SIZE;
     if (slot_size <= RB_SLOT_HDR_SIZE)
         return RB_ERR_INVAL;
@@ -313,10 +317,12 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
+#if !RB_DIRECT_SLOT_MAP
 #if RB_USE_POINTERS
     rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
+#endif
 #endif
     RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
 #endif
@@ -410,6 +416,9 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
         if (tail == head)
             return RB_ERR_EMPTY;
     }
+ #if RB_DIRECT_SLOT_MAP
+    uint32_t slot_index = slot_index_for(rb, tail);
+#else
     rb_entry_t entry = rb->entries[tail & rb->mask];
     uint32_t slot_index;
 #if RB_USE_POINTERS
@@ -421,6 +430,7 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     slot_index = (uint32_t)(off / rb->slot_stride);
 #else
     slot_index = (uint32_t)entry;
+#endif
 #endif
     if (slot_index >= rb->slots)
         return RB_ERR_INVAL;
