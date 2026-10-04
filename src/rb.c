@@ -203,12 +203,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     uint32_t shift = 0u;
     for (uint32_t v = stride; v > 1u; v >>= 1u)
         shift++;
-    rb->slot_stride_shift = shift;
-    rb->cursor_mask = (uint32_t)((size_t)slots * stride - 1u);
-#endif
     size_t need = (size_t)slots * stride;
     if (scratch_size < need)
         return RB_ERR_INVAL;
+#endif
     memset(rb, 0, offsetof(rb_t, entries));
     rb->capacity = capacity;
     rb->limit = limit;
@@ -217,6 +215,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     rb->slots_mask = RB_IS_POW2(slots) ? slots - 1u : 0u;
     rb->slot_size = slot_size;
     rb->slot_stride = stride;
+#if RB_CURSOR_ENCODES_SCRATCH
+    rb->slot_stride_shift = shift;
+    rb->cursor_mask = (uint32_t)((size_t)slots * stride - 1u);
+#endif
     rb->low_d = cfg->low_d;
     rb->low_e = cfg->low_e;
     rb->oversize_policy = cfg->oversize_policy;
@@ -311,7 +313,11 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
     if (out_slot_index)
         *out_slot_index = slot_index;
     if (out_writable) {
+#if RB_CURSOR_ENCODES_SCRATCH
+        uint8_t *slot = rb_scratch(rb) + head;
+#else
         uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+#endif
         void *w = slot + RB_SLOT_HDR_SIZE;
         *out_writable = w;
         /* The caller will write into this line next. Start the fetch now,
