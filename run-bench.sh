@@ -21,6 +21,11 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
+if ! command -v perf >/dev/null 2>&1; then
+    echo "error: perf is required for per-mode hardware-counter measurements" >&2
+    exit 1
+fi
+
 CPU_GOVERNOR="performance"
 INTEL_PSTATE_NO_TURBO="/sys/devices/system/cpu/intel_pstate/no_turbo"
 
