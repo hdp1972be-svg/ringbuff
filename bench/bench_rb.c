@@ -253,7 +253,7 @@ int main(void) {
     if (iters_env && *iters_env) {
         char *end = NULL;
         unsigned long value = strtoul(iters_env, &end, 10);
-        if (*end != '\\0' || value == 0 || value > UINT32_MAX) {
+        if (*end != '\0' || value == 0 || value > UINT32_MAX) {
             fprintf(stderr, "invalid RB_BENCH_ITERS: %s\\n", iters_env);
             return 2;
         }
