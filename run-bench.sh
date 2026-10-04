@@ -57,6 +57,21 @@ fi
 cd "$ROOT"
 
 MODES=(0 1 2 3)
+RESULTS_DIR="$ROOT/bench-results"
+RESULTS_MD="$RESULTS_DIR/perf-modes.md"
+mkdir -p "$RESULTS_DIR"
+
+cat > "$RESULTS_MD" <<EOF
+# Ringbuff benchmark + perf results
+
+- Date: $(date -Is)
+- Host: $(hostname)
+- Iterations: $ITERS
+- CPU governor: $CPU_GOVERNOR
+- Intel Turbo: disabled where supported
+- Modes: 0, 1, 2, 3
+
+EOF
 
 for mode in "${MODES[@]}"; do
     BUILD="$ROOT/build-bench-mode${mode}"
