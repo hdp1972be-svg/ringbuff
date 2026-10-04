@@ -29,6 +29,13 @@
 #define RB_USE_POINTERS       0
 #endif
 
+/* 1 = derive the scratch slot directly from the ring cursor instead of
+   storing/loading an entries[] mapping. Requires RB_USE_POINTERS=0 and
+   runtime slots == capacity. entries[] storage is retained for ABI/layout. */
+#ifndef RB_DIRECT_SLOT_MAP
+#define RB_DIRECT_SLOT_MAP    0
+#endif
+
 /* 1 = pad slot stride up to RB_CACHE_LINE to avoid false sharing. */
 #ifndef RB_SLOT_CACHELINE_PAD
 #define RB_SLOT_CACHELINE_PAD 0
