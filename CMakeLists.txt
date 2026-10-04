@@ -8,6 +8,7 @@ option(RB_USE_POINTERS "Use void* entries instead of uint32_t indices" OFF)
 option(RB_SLOT_CACHELINE_PAD "Pad slot stride up to a cache line" OFF)
 option(RB_SINGLE_THREADED "Single-threaded / no atomics mode" OFF)
 option(RB_USE_ATOMICS "Use C11 <stdatomic.h>" ON)
+option(RB_CURSOR_ENCODES_SCRATCH "Encode scratchpad byte offsets directly in head/tail cursors" OFF)
 option(RB_ENABLE_STATS "Compile in statistics counters" ON)
 option(RB_ENABLE_THREAD_HELPERS "Build pthread spawn/join helper" ON)
 option(RB_ENABLE_NOTIFY "Build futex/eventfd wake-up helpers" ON)
@@ -34,6 +35,7 @@ target_compile_definitions(rb PUBLIC
     $<$<BOOL:${RB_SLOT_CACHELINE_PAD}>:RB_SLOT_CACHELINE_PAD=1>
     $<$<BOOL:${RB_SINGLE_THREADED}>:RB_SINGLE_THREADED=1>
     $<$<BOOL:${RB_USE_ATOMICS}>:RB_USE_ATOMICS=1>
+    $<$<BOOL:${RB_CURSOR_ENCODES_SCRATCH}>:RB_CURSOR_ENCODES_SCRATCH=1>
     $<$<BOOL:${RB_ENABLE_STATS}>:RB_ENABLE_STATS=1>
     $<$<BOOL:${RB_ENABLE_NOTIFY}>:RB_ENABLE_NOTIFY=1>
     $<$<BOOL:${RB_FUTEX_SHARED}>:RB_FUTEX_SHARED=1>)
