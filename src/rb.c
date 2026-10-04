@@ -194,6 +194,9 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
         return RB_ERR_INVAL;
     uint32_t stride = slot_stride_for(slot_size);
 #if RB_CURSOR_ENCODES_SCRATCH
+#if RB_USE_POINTERS || RB_PER_SLOT_LAP
+    return RB_ERR_INVAL;
+#endif
     if (slots != capacity || !RB_IS_POW2(stride) ||
         (size_t)slots * stride > (size_t)UINT32_MAX / 2u)
         return RB_ERR_INVAL;
