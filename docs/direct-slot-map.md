@@ -67,3 +67,14 @@ This gives three useful pairwise comparisons:
 - **2 → 1:** remove the consumer-side metadata load.
 
 The benchmark runner builds and measures all four modes independently. It also runs perf stat separately for each mode and writes the complete benchmark/performance-counter output to bench-results/perf-modes.md for easy copy/paste.
+
+
+## Portable benchmark runner
+
+`run-bench.sh` supports both bare-metal Linux hosts and virtualized CI runners.
+
+On a host exposing Linux CPU-frequency policy files, the runner saves the original governor, switches to `performance`, disables Intel Turbo through `intel_pstate/no_turbo` when available, and restores the original settings on exit.
+
+Virtualized runners may expose neither interface. The runner detects that case and records CPU-policy control as `unavailable` instead of failing; the four-mode benchmark and `perf stat` measurements continue.
+
+This distinction matters when comparing results: local bare-metal measurements can be controlled for frequency and Turbo, while GitHub-hosted VM results are primarily useful for relative A/B and regression checks. Absolute latency numbers from the two environments are not directly comparable.

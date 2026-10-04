@@ -17,8 +17,10 @@ echo "compiler   : $CC"
 echo "date       : $(date)"
 echo
 
-# Run as root: this benchmark temporarily changes the CPU frequency policy
-# and disables Intel Turbo, then restores the original settings on exit.
+# Run as root: on bare-metal systems this benchmark temporarily changes the
+# CPU frequency policy and disables Intel Turbo, then restores the original
+# settings on exit. Virtualized runners may expose neither interface; in that
+# case the benchmark continues without changing CPU policy.
 if [[ "${EUID}" -ne 0 ]]; then
     echo "error: run this script as root (e.g. sudo ./run-bench.sh)" >&2
     exit 1
@@ -32,34 +34,52 @@ fi
 CPU_GOVERNOR="performance"
 INTEL_PSTATE_NO_TURBO="/sys/devices/system/cpu/intel_pstate/no_turbo"
 
-ORIG_GOVERNOR="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+GOVERNOR_CONTROL=0
+ORIG_GOVERNOR=""
+if [[ -r "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor" && -w "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor" ]]; then
+    ORIG_GOVERNOR="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+    GOVERNOR_CONTROL=1
+fi
+
 ORIG_NO_TURBO=""
-if [[ -f "$INTEL_PSTATE_NO_TURBO" ]]; then
+TURBO_CONTROL=0
+if [[ -r "$INTEL_PSTATE_NO_TURBO" && -w "$INTEL_PSTATE_NO_TURBO" ]]; then
     ORIG_NO_TURBO="$(cat "$INTEL_PSTATE_NO_TURBO")"
+    TURBO_CONTROL=1
 fi
 
 restore_cpu_policy() {
     echo
     echo "restoring CPU policy..."
-    if [[ -n "$ORIG_NO_TURBO" && -w "$INTEL_PSTATE_NO_TURBO" ]]; then
+    if [[ "$TURBO_CONTROL" -eq 1 ]]; then
         echo "$ORIG_NO_TURBO" > "$INTEL_PSTATE_NO_TURBO"
     fi
-    for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        [[ -w "$governor" ]] && echo "$ORIG_GOVERNOR" > "$governor" || true
-    done
+    if [[ "$GOVERNOR_CONTROL" -eq 1 ]]; then
+        for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            [[ -w "$governor" ]] && echo "$ORIG_GOVERNOR" > "$governor" || true
+        done
+    fi
 }
 trap restore_cpu_policy EXIT INT TERM
 
-echo "CPU policy: $ORIG_GOVERNOR -> $CPU_GOVERNOR"
-for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    [[ -w "$governor" ]] && echo "$CPU_GOVERNOR" > "$governor"
-done
+if [[ "$GOVERNOR_CONTROL" -eq 1 ]]; then
+    echo "CPU policy: $ORIG_GOVERNOR -> $CPU_GOVERNOR"
+    for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [[ -w "$governor" ]] && echo "$CPU_GOVERNOR" > "$governor"
+    done
+    GOVERNOR_STATUS="$CPU_GOVERNOR"
+else
+    echo "CPU governor: control unavailable; continuing without changing it"
+    GOVERNOR_STATUS="unavailable"
+fi
 
-if [[ -w "$INTEL_PSTATE_NO_TURBO" ]]; then
+if [[ "$TURBO_CONTROL" -eq 1 ]]; then
     echo 1 > "$INTEL_PSTATE_NO_TURBO"
     echo "Intel Turbo: disabled"
+    TURBO_STATUS="disabled"
 else
     echo "Intel Turbo: control unavailable; continuing without changing it"
+    TURBO_STATUS="unavailable"
 fi
 
 cd "$ROOT"
@@ -75,8 +95,8 @@ cat > "$RESULTS_MD" <<EOF
 - Date: $(date -Is)
 - Host: $(hostname)
 - Iterations: $ITERS
-- CPU governor: $CPU_GOVERNOR
-- Intel Turbo: disabled where supported
+- CPU governor: $GOVERNOR_STATUS
+- Intel Turbo control: $TURBO_STATUS
 - Modes: 0, 1, 2, 3
 
 EOF
