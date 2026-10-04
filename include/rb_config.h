@@ -60,6 +60,12 @@
 #define RB_CURSOR_ENCODES_SCRATCH 0
 #endif
 
+/* 1 = derive the scratch slot directly from head/tail instead of entries[].
+   Requires slots == capacity. Keeps cursors as logical sequence numbers. */
+#ifndef RB_DIRECT_SLOT_MAP
+#define RB_DIRECT_SLOT_MAP 0
+#endif
+
 /* 1 = compile stats (watermarks, counters) into the control block. */
 #ifndef RB_ENABLE_STATS
 #define RB_ENABLE_STATS       1
