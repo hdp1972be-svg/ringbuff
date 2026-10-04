@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
 
 #if defined(__linux__)
 #include <sys/utsname.h>
@@ -26,6 +27,99 @@ static double now_sec(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static int read_first_line(const char *path, char *buf, size_t bufsz) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int ok = fgets(buf, (int)bufsz, f) != NULL;
+    fclose(f);
+    if (ok) buf[strcspn(buf, "\\r\\n")] = '\\0';
+    return ok;
+}
+
+static double read_cpu_freq_mhz(void) {
+#if defined(__linux__)
+    const char *paths[] = {
+        "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq",
+        "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+    };
+    char line[128];
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        if (read_first_line(paths[i], line, sizeof line)) {
+            char *end = NULL;
+            double khz = strtod(line, &end);
+            if (end != line && khz > 0.0) return khz / 1000.0;
+        }
+    }
+
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "cpu MHz", 7) == 0) {
+                char *p = strchr(line, ':');
+                if (p) {
+                    double mhz = strtod(p + 1, NULL);
+                    fclose(f);
+                    return mhz;
+                }
+            }
+        }
+        fclose(f);
+    }
+#endif
+    return 0.0;
+}
+
+static double read_cpu_temp_c(void) {
+#if defined(__linux__)
+    for (int zone = 0; zone < 32; ++zone) {
+        char type_path[128], temp_path[128], type[128];
+        snprintf(type_path, sizeof type_path,
+                 "/sys/class/thermal/thermal_zone%d/type", zone);
+        snprintf(temp_path, sizeof temp_path,
+                 "/sys/class/thermal/thermal_zone%d/temp", zone);
+
+        if (!read_first_line(type_path, type, sizeof type)) continue;
+        if (strcmp(type, "x86_pkg_temp") != 0 &&
+            strcmp(type, "x86_pkg_temperature") != 0 &&
+            strcmp(type, "cpu-thermal") != 0)
+            continue;
+
+        char line[64];
+        if (read_first_line(temp_path, line, sizeof line)) {
+            char *end = NULL;
+            double millideg = strtod(line, &end);
+            if (end != line) return millideg / 1000.0;
+        }
+    }
+
+    /* Fallback: first thermal-zone temperature if no CPU-specific zone exists. */
+    for (int zone = 0; zone < 32; ++zone) {
+        char temp_path[128], line[64];
+        snprintf(temp_path, sizeof temp_path,
+                 "/sys/class/thermal/thermal_zone%d/temp", zone);
+        if (read_first_line(temp_path, line, sizeof line)) {
+            char *end = NULL;
+            double millideg = strtod(line, &end);
+            if (end != line) return millideg / 1000.0;
+        }
+    }
+#endif
+    return 0.0;
+}
+
+static void print_runtime_thermal_info(void) {
+    double mhz = read_cpu_freq_mhz();
+    double temp = read_cpu_temp_c();
+
+    printf("  CPU frequency: ");
+    if (mhz > 0.0) printf("%.0f MHz (reported current)\\n", mhz);
+    else printf("unavailable\\n");
+
+    printf("  CPU temperature: ");
+    if (temp > 0.0) printf("%.1f C\\n", temp);
+    else printf("unavailable\\n");
 }
 
 static void print_system_info(void) {
@@ -150,6 +244,9 @@ int main(void) {
     printf("(1 cycle = acquire + publish + consume + release)\n");
     printf("-------------------------------------------------\n\n");
     print_system_info();
+    print_runtime_thermal_info();
+    printf("  mapping mode : %d (0=entries, 1=direct, 2=direct+metadata load)\\n", RB_DIRECT_SLOT_MAP);
+    printf("\n");
 
     const uint32_t iters = 2000000u;
     const uint32_t sizes[] = { 64u, 256u, 2048u, 8192u };
