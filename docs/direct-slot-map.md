@@ -47,3 +47,23 @@ Then inspect the generated assembly:
 - `rb_acquire` should remain functionally unchanged.
 
 The benchmark result should be compared against the dense baseline rather than against the earlier sparse-layout experiment. The sparse experiment changes cache footprint; this experiment specifically tests removal of the metadata dependency.
+## Four-mode isolation
+
+The experiment now has four hot-path variants:
+
+| Mode | Publish | Consume metadata load | Slot address |
+|---|---|---|---|
+| 0 | entries[] store | entries[] load | loaded metadata |
+| 1 | none | none | direct from cursor |
+| 2 | none | explicit volatile load | direct from cursor |
+| 3 | entries[] store | explicit volatile load | direct from cursor |
+
+Mode 2 retains the consumer-side metadata load while removing the publish store. Mode 3 retains both the publish store and consumer load, but the loaded value is deliberately not used to calculate the scratch address.
+
+This gives three useful pairwise comparisons:
+
+- **0 → 3:** retain store/load traffic, remove the metadata load's dependency on the scratch address.
+- **3 → 2:** remove the publish-side entries[] store.
+- **2 → 1:** remove the consumer-side metadata load.
+
+The benchmark runner builds and measures all four modes independently. It also runs perf stat separately for each mode and writes the complete benchmark/performance-counter output to bench-results/perf-modes.md for easy copy/paste.
