@@ -193,6 +193,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     if (((uintptr_t)scratch % need_align) != 0u)
         return RB_ERR_INVAL;
     uint32_t stride = slot_stride_for(slot_size);
+#if RB_DIRECT_SLOT_MAP
+    if (RB_CURSOR_ENCODES_SCRATCH || RB_USE_POINTERS || RB_PER_SLOT_LAP || slots != capacity)
+        return RB_ERR_INVAL;
+#endif
 #if RB_CURSOR_ENCODES_SCRATCH
 #if RB_USE_POINTERS || RB_PER_SLOT_LAP
     return RB_ERR_INVAL;
@@ -456,6 +460,9 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
 #if RB_CURSOR_ENCODES_SCRATCH
     uint32_t slot_index = slot_index_for(rb, tail);
     const uint8_t *slot = rb_scratch(rb) + tail;
+#elif RB_DIRECT_SLOT_MAP
+    uint32_t slot_index = tail & rb->mask;
+    const uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
 #else
     rb_entry_t entry = rb->entries[tail & rb->mask];
     uint32_t slot_index;
