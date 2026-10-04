@@ -24,6 +24,14 @@
 #define RB_CACHE_LINE         64u
 #endif
 
+/* Physical stride between ring entries in the default entries[] layout.
+ * The experimental sparse layout deliberately places each 4-byte/8-byte
+ * entry at the start of its own cache line. A value of zero restores the
+ * legacy dense entries[] representation. */
+#ifndef RB_RING_ENTRY_STRIDE
+#define RB_RING_ENTRY_STRIDE  RB_CACHE_LINE
+#endif
+
 /* 0 = uint32_t slot index (default), 1 = void* slot pointer. */
 #ifndef RB_USE_POINTERS
 #define RB_USE_POINTERS       0
