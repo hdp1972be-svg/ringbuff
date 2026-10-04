@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 H. De Pauw
 
-name: Benchmarks
+name: Ringbuff benchmark matrix
 
 on:
   schedule:
@@ -9,86 +9,55 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bench:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Capture runner info
+      - name: Install benchmark toolchain
         run: |
-          mkdir -p benchmarks/results
-          DATE=$(date -u +%Y-%m-%d-%H%M%S)
-          OUT=benchmarks/results/${DATE}.txt
-          {
-            echo "=== GitHub Actions runner ==="
-            echo "date_utc: $(date -u --iso-8601=seconds)"
-            echo "runner_name: ${RUNNER_NAME}"
-            echo "runner_os: ${RUNNER_OS}"
-            echo "runner_arch: ${RUNNER_ARCH}"
-            echo "runner_environment: ${RUNNER_ENVIRONMENT:-unknown}"
-            echo "github_runner_image: ${ImageOS:-unknown}"
-            echo
-            echo "=== system ==="
-            uname -a
-            echo "kernel: $(uname -r)"
-            echo "architecture: $(uname -m)"
-            echo "logical_cpus: $(nproc)"
-            echo "online_cpus: $(getconf _NPROCESSORS_ONLN)"
-            echo "cpu_model: $(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
-            echo "cpu_family: $(grep -m1 '^cpu family' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
-            echo "cpu_model_id: $(grep -m1 '^model[[:space:]]*:' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
-            echo "cpu_stepping: $(grep -m1 '^stepping' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
-            echo "cpu_mhz: $(grep -m1 '^cpu MHz' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
-            echo "ram: $(free -h | awk '/^Mem:/ {print $2}')"
-            echo "ram_bytes: $(awk '/^MemTotal:/ {print $2*1024}' /proc/meminfo)"
-            echo "cache:"
-            lscpu | grep -E '^(L1d cache|L1i cache|L2 cache|L3 cache|NUMA node|CPU\(s\):)' || true
-            echo
-            echo "=== compiler ==="
-            gcc --version | head -1
-            echo
-            echo "=== cpu flags ==="
-            grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2- | xargs
-            echo
-            echo "=== benchmark binary ==="
-            echo "compiler_flags: Release / CMake / -O2"
-          } | tee "$OUT"
-          echo "BENCH_OUT=$OUT" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12 linux-tools-common linux-tools-generic
 
-      - name: Build benchmarks
+      - name: Capture runner information
         run: |
-          cmake -B build-bench -DRB_BUILD_BENCH=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-bench -j
+          echo "=== GitHub Actions runner ==="
+          echo "date_utc: $(date -u --iso-8601=seconds)"
+          echo "runner_name: ${RUNNER_NAME}"
+          echo "runner_os: ${RUNNER_OS}"
+          echo "runner_arch: ${RUNNER_ARCH}"
+          echo "runner_environment: ${RUNNER_ENVIRONMENT:-unknown}"
+          echo "github_runner_image: ${ImageOS:-unknown}"
+          echo
+          echo "=== compiler ==="
+          gcc-12 --version | head -1
+          echo
+          echo "=== system ==="
+          uname -a
+          echo "logical_cpus: $(nproc)"
+          echo "cpu_model: $(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//')"
+          echo "ram: $(free -h | awk '/^Mem:/ {print $2}')"
+          echo
+          echo "=== cpu flags ==="
+          grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2- | xargs
 
-      - name: Run benchmarks
+      - name: Run benchmark matrix
+        env:
+          CC: gcc-12
+          RB_BENCH_ITERS: 2000000
         run: |
-          {
-            echo
-            echo "=== bench_rb ==="
-            ./build-bench/bench/bench_rb
-            echo
-            echo "=== bench_rb_random ==="
-            ./build-bench/bench/bench_rb_random
-          } | tee -a "$BENCH_OUT"
+          chmod +x ./run-bench.sh
+          sudo env CC="$CC" RB_BENCH_ITERS="$RB_BENCH_ITERS" ./run-bench.sh
 
-      - name: Upload benchmark result
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: ringbuff-benchmark-${{ github.run_number }}
-          path: ${{ env.BENCH_OUT }}
+          path: bench-results/
+          if-no-files-found: error
           retention-days: 90
-
-      - name: Commit results
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/results/
-          if git diff --staged --quiet; then
-            echo "no changes to commit"
-          else
-            git commit -m "benchmarks: $(date -u +%Y-%m-%d-%H%M%S)"
-            git push
-          fi
