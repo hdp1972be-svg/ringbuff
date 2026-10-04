@@ -137,7 +137,7 @@ static void bench_one(uint32_t slot_size, uint32_t cap, uint32_t iters) {
     double cycles_per_s = (double)iters / (t1 - t0);
     double ns_per_cycle = 1e9 / cycles_per_s;
 
-    printf("  slot=%-6u cap=%-5u  %8.2f M cycles/s  (%7.2f ns / cycle)\n",
+    printf("  slot=%-6u cap=%-5u  %8.2f M iterations/s  (%7.2f ns / iteration)\n",
            slot_size, cap, cycles_per_s / 1e6, ns_per_cycle);
 
     rb_deinit(rb);
