@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOBS="${JOBS:-$(nproc)}"
 ITERS="${RB_BENCH_ITERS:-2000000}"
+CC="${CC:-gcc-12}"
+export CC
 
 echo "============================================================"
 echo " ringbuff benchmark matrix"
@@ -11,6 +13,7 @@ echo "============================================================"
 echo "root       : $ROOT"
 echo "jobs       : $JOBS"
 echo "iterations : $ITERS"
+echo "compiler   : $CC"
 echo "date       : $(date)"
 echo
 
@@ -89,6 +92,7 @@ for mode in "${MODES[@]}"; do
 
     cmake -S "$ROOT" -B "$BUILD" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER="$CC" \
         -DCMAKE_C_FLAGS="-O2" \
         -DRB_BUILD_BENCH=ON \
         -DRB_DIRECT_SLOT_MAP="$mode" \
