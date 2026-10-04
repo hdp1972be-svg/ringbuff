@@ -29,9 +29,15 @@
 #define RB_USE_POINTERS       0
 #endif
 
-/* 1 = derive the scratch slot directly from the ring cursor instead of
-   storing/loading an entries[] mapping. Requires RB_USE_POINTERS=0 and
-   runtime slots == capacity. entries[] storage is retained for ABI/layout. */
+/* Slot mapping experiment:
+ *   0 = normal entries[] mapping
+ *   1 = derive slot directly from the logical cursor
+ *   2 = derive slot directly, but retain an explicit volatile entries[]
+ *       load in rb_consume() to measure the cost of the metadata load
+ *       without making it part of the slot-address dependency chain.
+ *
+ * Modes 1 and 2 require RB_USE_POINTERS=0 and runtime slots == capacity.
+ * entries[] storage is retained for ABI/layout in both experimental modes. */
 #ifndef RB_DIRECT_SLOT_MAP
 #define RB_DIRECT_SLOT_MAP    0
 #endif
