@@ -195,7 +195,11 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     memset(rb, 0, offsetof(rb_t, entries));
     rb->capacity = capacity;
     rb->limit = limit;
+#if RB_RING_ENTRY_STRIDE
+    rb->mask = capacity * RB_RING_ENTRY_STRIDE - 1u;
+#else
     rb->mask = capacity - 1u;
+#endif
     rb->slots = slots;
     rb->slots_mask = RB_IS_POW2(slots) ? slots - 1u : 0u;
     rb->slot_size = slot_size;
@@ -341,7 +345,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
 #if RB_RING_ENTRY_STRIDE
-    rb_entry_t *entry = (rb_entry_t *)((uint8_t *)rb->entries + (head & (rb->capacity * RB_RING_ENTRY_STRIDE - 1u)));
+    rb_entry_t *entry = (rb_entry_t *)((uint8_t *)rb->entries + (head & rb->mask));
 #else
     rb_entry_t *entry = &rb->entries[head & rb->mask];
 #endif
@@ -452,7 +456,7 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     }
 #if RB_RING_ENTRY_STRIDE
     rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries +
-                                             (tail & (rb->capacity * RB_RING_ENTRY_STRIDE - 1u)));
+                                             (tail & rb->mask));
 #else
 #if RB_RING_ENTRY_STRIDE
     rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
