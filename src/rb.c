@@ -152,7 +152,7 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     if (!slots)
         return RB_ERR_INVAL;
 #if RB_DIRECT_SLOT_MAP
-    if (RB_DIRECT_SLOT_MAP < 0 || RB_DIRECT_SLOT_MAP > 2 || RB_USE_POINTERS || RB_PER_SLOT_LAP || slots != capacity)
+    if (RB_DIRECT_SLOT_MAP < 0 || RB_DIRECT_SLOT_MAP > 3 || RB_USE_POINTERS || RB_PER_SLOT_LAP || slots != capacity)
         return RB_ERR_INVAL;
 #endif
     uint32_t slot_size = cfg->slot_size ? cfg->slot_size : RB_SLOT_SIZE;
@@ -317,7 +317,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
-#if !RB_DIRECT_SLOT_MAP
+#if !RB_DIRECT_SLOT_MAP || RB_DIRECT_SLOT_MAP == 3
 #if RB_USE_POINTERS
     rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
@@ -418,7 +418,7 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     }
  #if RB_DIRECT_SLOT_MAP
     uint32_t slot_index = slot_index_for(rb, tail);
-#if RB_DIRECT_SLOT_MAP == 2
+#if RB_DIRECT_SLOT_MAP == 2 || RB_DIRECT_SLOT_MAP == 3
     volatile rb_entry_t metadata_entry = rb->entries[tail & rb->mask];
     (void)metadata_entry;
 #endif
