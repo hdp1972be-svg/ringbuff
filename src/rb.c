@@ -345,10 +345,12 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
+#if !RB_CURSOR_ENCODES_SCRATCH
 #if RB_USE_POINTERS
     rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
+#endif
 #endif
     RB_ATOMIC_STORE_REL(&rb->head, cursor_advance(rb, head));
 #endif
@@ -442,6 +444,10 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
         if (tail == head)
             return RB_ERR_EMPTY;
     }
+#if RB_CURSOR_ENCODES_SCRATCH
+    uint32_t slot_index = slot_index_for(rb, tail);
+    const uint8_t *slot = rb_scratch(rb) + tail;
+#else
     rb_entry_t entry = rb->entries[tail & rb->mask];
     uint32_t slot_index;
 #if RB_USE_POINTERS
@@ -457,6 +463,7 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
     if (slot_index >= rb->slots)
         return RB_ERR_INVAL;
     const uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
+#endif
 #endif
     uint32_t hdr;
     memcpy(&hdr, slot + (RB_SLOT_HDR_SIZE - sizeof hdr), sizeof hdr);
