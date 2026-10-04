@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(RB_USE_POINTERS "Use void* entries instead of uint32_t indices" OFF)
-set(RB_DIRECT_SLOT_MAP 0 CACHE STRING "Slot mapping mode: 0=entries, 1=direct, 2=direct plus metadata-load control")
+set(RB_DIRECT_SLOT_MAP 0 CACHE STRING "Slot mapping mode: 0=entries, 1=direct, 2=direct plus metadata load, 3=direct plus store/load controls")
 option(RB_SLOT_CACHELINE_PAD "Pad slot stride up to a cache line" OFF)
 option(RB_SINGLE_THREADED "Single-threaded / no atomics mode" OFF)
 option(RB_USE_ATOMICS "Use C11 <stdatomic.h>" ON)
