@@ -89,7 +89,7 @@ for mode in "${MODES[@]}"; do
 
     perf stat --no-big-num \
         -e cycles,instructions,branches,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
-        -- RB_BENCH_ITERS="$ITERS" "$BUILD/bench/bench_rb" > /dev/null 2> "$PERF_OUT" || true
+        -- env RB_BENCH_ITERS="$ITERS" "$BUILD/bench/bench_rb" > /dev/null 2> "$PERF_OUT"
 
     {
         echo "## Mode $mode"
