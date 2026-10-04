@@ -56,7 +56,7 @@ fi
 
 cd "$ROOT"
 
-MODES=(0 1 2)
+MODES=(0 1 2 3)
 
 for mode in "${MODES[@]}"; do
     BUILD="$ROOT/build-bench-mode${mode}"
