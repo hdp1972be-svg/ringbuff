@@ -245,7 +245,7 @@ int main(void) {
     printf("-------------------------------------------------\n\n");
     print_system_info();
     print_runtime_thermal_info();
-    printf("  mapping mode : %d (0=entries, 1=direct, 2=direct+metadata load)\\n", RB_DIRECT_SLOT_MAP);
+    printf("  mapping mode : %d (0=entries, 1=direct, 2=direct+metadata load, 3=direct+store/load)\\n", RB_DIRECT_SLOT_MAP);
     printf("\n");
 
     const char *iters_env = getenv("RB_BENCH_ITERS");
