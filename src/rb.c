@@ -56,7 +56,11 @@ struct rb_s {
 #if RB_ENABLE_STATS
     rb_stats_t stats;
 #endif
+#if RB_RING_ENTRY_STRIDE
+    RB_ALIGNAS(RB_CACHE_LINE) rb_entry_t entries[];
+#else
     rb_entry_t entries[];
+#endif
 };
 static inline uint32_t slot_stride_for(uint32_t slot_size) {
 #if RB_SLOT_CACHELINE_PAD
@@ -71,8 +75,13 @@ static inline uint32_t slot_stride_for(uint32_t slot_size) {
 static inline bool below_low(uint32_t count, uint32_t limit, uint32_t percent) {
     return percent && (uint64_t)count * 100u < (uint64_t)limit * percent;
 }
-static inline uint32_t slot_index_for(const rb_t *rb, uint32_t head) {
-    return rb->slots_mask ? (head & rb->slots_mask) : (head % rb->slots);
+static inline uint32_t slot_index_for(const rb_t *rb, uint32_t pos) {
+#if RB_RING_ENTRY_STRIDE
+    uint32_t ring_index = pos / RB_RING_ENTRY_STRIDE;
+#else
+    uint32_t ring_index = pos;
+#endif
+    return rb->slots_mask ? (ring_index & rb->slots_mask) : (ring_index % rb->slots);
 }
 static inline uint8_t *rb_scratch(rb_t *rb) {
     return (uint8_t *)rb + rb->scratch_off;
@@ -132,7 +141,11 @@ void rb_config_set_consumer_stack(rb_config_t *c, size_t v) {
         c->consumer_stack_size = v;
 }
 size_t rb_size(uint32_t capacity) {
+#if RB_RING_ENTRY_STRIDE
+    return offsetof(rb_t, entries) + (size_t)capacity * RB_RING_ENTRY_STRIDE;
+#else
     return offsetof(rb_t, entries) + (size_t)capacity * sizeof(rb_entry_t);
+#endif
 }
 size_t rb_producer_stack(const rb_t *rb) {
     return rb ? rb->producer_stack_size : 0u;
@@ -148,6 +161,11 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     uint32_t capacity = cfg->capacity ? cfg->capacity : RB_CAPACITY;
     if (!RB_IS_POW2(capacity) || capacity < 2u)
         return RB_ERR_INVAL;
+#if RB_RING_ENTRY_STRIDE
+    if (!RB_IS_POW2(RB_RING_ENTRY_STRIDE) || RB_RING_ENTRY_STRIDE < sizeof(rb_entry_t) ||
+        RB_RING_ENTRY_STRIDE < RB_CACHE_LINE)
+        return RB_ERR_INVAL;
+#endif
     uint32_t slots = cfg->slots ? cfg->slots : RB_NUM_SLOTS;
     if (!slots)
         return RB_ERR_INVAL;
@@ -313,12 +331,21 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
-#if RB_USE_POINTERS
-    rb->entries[head & rb->mask] = (rb_entry_t)slot;
+#if RB_RING_ENTRY_STRIDE
+    rb_entry_t *entry = (rb_entry_t *)((uint8_t *)rb->entries + head);
 #else
-    rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
+    rb_entry_t *entry = &rb->entries[head & rb->mask];
 #endif
+#if RB_USE_POINTERS
+    *entry = (rb_entry_t)slot;
+#else
+    *entry = (rb_entry_t)slot_index;
+#endif
+#if RB_RING_ENTRY_STRIDE
+    RB_ATOMIC_STORE_REL(&rb->head, head + RB_RING_ENTRY_STRIDE);
+#else
     RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
+#endif
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
      * Independent of the Linux futex/eventfd CPU wake path. */
@@ -345,7 +372,11 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     uint32_t tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
     rb->cached_tail = tail;
+#if RB_RING_ENTRY_STRIDE
+    uint32_t count = ((head + RB_RING_ENTRY_STRIDE) - tail) / RB_RING_ENTRY_STRIDE;
+#else
     uint32_t count = (head + 1u) - tail;
+#endif
 #endif
 #if RB_ENABLE_STATS
     rb->stats.published++;
@@ -410,7 +441,11 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
         if (tail == head)
             return RB_ERR_EMPTY;
     }
+#if RB_RING_ENTRY_STRIDE
+    rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
+#else
     rb_entry_t entry = rb->entries[tail & rb->mask];
+#endif
     uint32_t slot_index;
 #if RB_USE_POINTERS
     if ((const uint8_t *)entry < rb_scratch(rb))
@@ -550,7 +585,12 @@ uint32_t rb_count(const rb_t *rb) {
     #if RB_PER_SLOT_LAP
     return RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) - RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
 #else
+#if RB_RING_ENTRY_STRIDE
+    return (RB_ATOMIC_LOAD_ACQ(&rb->head) - RB_ATOMIC_LOAD_ACQ(&rb->tail)) /
+           RB_RING_ENTRY_STRIDE;
+#else
     return RB_ATOMIC_LOAD_ACQ(&rb->head) - RB_ATOMIC_LOAD_ACQ(&rb->tail);
+#endif
 #endif
 }
 uint32_t rb_capacity(const rb_t *rb) {
