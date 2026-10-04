@@ -268,11 +268,20 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
         count = pos - tail;
         if (count >= rb->limit) {
 #else
+    #if RB_RING_ENTRY_STRIDE
+    uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail,
+             count = (head - tail) / RB_RING_ENTRY_STRIDE;
+#else
     uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail, count = head - tail;
+#endif
     if (count >= rb->limit) {
         tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
         rb->cached_tail = tail;
+        #if RB_RING_ENTRY_STRIDE
+        count = (head - tail) / RB_RING_ENTRY_STRIDE;
+#else
         count = head - tail;
+#endif
         if (count >= rb->limit) {
 #endif
 #if RB_ENABLE_STATS
@@ -444,7 +453,11 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
 #if RB_RING_ENTRY_STRIDE
     rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
 #else
+#if RB_RING_ENTRY_STRIDE
+    rb_entry_t entry = *(const rb_entry_t *)((const uint8_t *)rb->entries + tail);
+#else
     rb_entry_t entry = rb->entries[tail & rb->mask];
+#endif
 #endif
     uint32_t slot_index;
 #if RB_USE_POINTERS
@@ -498,9 +511,17 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
     uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #else
     uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail);
+#if RB_RING_ENTRY_STRIDE
+    RB_ATOMIC_STORE_REL(&rb->tail, tail + RB_RING_ENTRY_STRIDE);
+    rb->consumer_active = 0u;
+    uint32_t head = rb->cached_head,
+             new_count = (head - (tail + RB_RING_ENTRY_STRIDE)) / RB_RING_ENTRY_STRIDE,
+             old_count = new_count + 1u;
+#else
     RB_ATOMIC_STORE_REL(&rb->tail, tail + 1u);
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_head, new_count = head - (tail + 1u), old_count = new_count + 1u;
+#endif
 #endif
 #if RB_ENABLE_STATS
     rb->stats.consumed++;
