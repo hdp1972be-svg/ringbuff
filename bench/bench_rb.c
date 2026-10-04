@@ -34,7 +34,7 @@ static int read_first_line(const char *path, char *buf, size_t bufsz) {
     if (!f) return 0;
     int ok = fgets(buf, (int)bufsz, f) != NULL;
     fclose(f);
-    if (ok) buf[strcspn(buf, "\\r\\n")] = '\\0';
+    if (ok) buf[strcspn(buf, "\r\n")] = '\0';
     return ok;
 }
 
@@ -114,11 +114,11 @@ static void print_runtime_thermal_info(void) {
     double temp = read_cpu_temp_c();
 
     printf("  CPU frequency: ");
-    if (mhz > 0.0) printf("%.0f MHz (reported current)\\n", mhz);
-    else printf("unavailable\\n");
+    if (mhz > 0.0) printf("%.0f MHz (reported current)\n", mhz);
+    else printf("unavailable\n");
 
     printf("  CPU temperature: ");
-    if (temp > 0.0) printf("%.1f C\\n", temp);
+    if (temp > 0.0) printf("%.1f C\n", temp);
     else printf("unavailable\\n");
 }
 
