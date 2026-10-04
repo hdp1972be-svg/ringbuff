@@ -82,7 +82,33 @@ for mode in "${MODES[@]}"; do
     echo "--- running mode $mode ---"
     echo
 
-    RB_BENCH_ITERS="$ITERS" "$BUILD/bench/bench_rb"
+    BENCH_OUT="$RESULTS_DIR/mode${mode}-bench.txt"
+    PERF_OUT="$RESULTS_DIR/mode${mode}-perf.txt"
+    RB_BENCH_ITERS="$ITERS" "$BUILD/bench/bench_rb" > "$BENCH_OUT"
+    cat "$BENCH_OUT"
+
+    perf stat --no-big-num \
+        -e cycles,instructions,branches,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses \
+        -- RB_BENCH_ITERS="$ITERS" "$BUILD/bench/bench_rb" > /dev/null 2> "$PERF_OUT" || true
+
+    {
+        echo "## Mode $mode"
+        echo
+        echo "### Benchmark"
+        echo
+        echo "\`\`\`text"
+        cat "$BENCH_OUT"
+        echo "\`\`\`"
+        echo
+        echo "### perf stat"
+        echo
+        echo "Command: perf stat --no-big-num -e cycles,instructions,branches,branch-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses -- bench/bench_rb"
+        echo
+        echo "\`\`\`text"
+        cat "$PERF_OUT"
+        echo "\`\`\`"
+        echo
+    } >> "$RESULTS_MD"
 done
 
 echo
