@@ -28,6 +28,7 @@ static int rb_futex_wake(uint32_t *word) {
 }
 #endif
 #define RB_SCRATCH_INDEX_HEAD_OFF 0u
+#define RB_SCRATCH_NOTIFY_WAITERS_OFF 4u
 #define RB_SCRATCH_INDEX_TAIL_OFF RB_CACHE_LINE
 #define RB_SCRATCH_INDEX_BYTES (2u * RB_CACHE_LINE)
 
@@ -60,6 +61,9 @@ struct rb_s {
 #if !RB_PER_SLOT_LAP
     rb_atomic_u32 *head_ptr;
     rb_atomic_u32 *tail_ptr;
+#if RB_ENABLE_NOTIFY && defined(__linux__)
+    rb_atomic_u32 *notify_waiters_ptr;
+#endif
 #endif
     rb_index_mode_t index_mode;
     rb_callbacks_t cb;
@@ -237,6 +241,11 @@ rb_err_t rb_init_ex(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scra
         ? rb_canonical_head(rb) : &rb->head;
     rb->tail_ptr = rb->index_mode == RB_INDEX_MODE_SCRATCH
         ? rb_canonical_tail(rb) : &rb->tail;
+#if RB_ENABLE_NOTIFY && defined(__linux__)
+    rb->notify_waiters_ptr = rb->index_mode == RB_INDEX_MODE_SCRATCH
+        ? (rb_atomic_u32 *)(rb->scratch_base + RB_SCRATCH_NOTIFY_WAITERS_OFF)
+        : &rb->notify_waiters;
+#endif
 #endif
     rb->cb = cfg->cb;
     #if RB_PER_SLOT_LAP
@@ -262,6 +271,10 @@ rb_err_t rb_init_ex(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scra
     rb->pending_wanted = 0u;
     rb->consumer_active = rb->consumer_slot = 0u;
     RB_ATOMIC_STORE_RLX(&rb->full_latch, 0u);
+#if RB_ENABLE_NOTIFY && defined(__linux__)
+    if (initialize_shared_state && rb->index_mode == RB_INDEX_MODE_SCRATCH)
+        RB_ATOMIC_STORE_RLX(rb->notify_waiters_ptr, 0u);
+#endif
     rb->low_d_latch = rb->low_e_latch = 0u;
 #if RB_PER_SLOT_LAP
     {
@@ -294,6 +307,9 @@ void rb_deinit(rb_t *rb) {
 #if !RB_PER_SLOT_LAP
     rb->head_ptr = NULL;
     rb->tail_ptr = NULL;
+#if RB_ENABLE_NOTIFY && defined(__linux__)
+    rb->notify_waiters_ptr = NULL;
+#endif
 #endif
     rb->pending_slot = RB_NO_PENDING;
     rb->consumer_active = 0u;
@@ -390,7 +406,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
      * Independent of the Linux futex/eventfd CPU wake path. */
     RB_HW_NOTIFY_DEVICE(rb, slot_index, written_len, truncated);
 #if RB_ENABLE_NOTIFY && defined(__linux__)
-    if (RB_ATOMIC_LOAD_RLX(&rb->notify_waiters) != 0u)
+    if (RB_ATOMIC_LOAD_RLX(rb->notify_waiters_ptr) != 0u)
 #if RB_PER_SLOT_LAP
         (void)rb_futex_wake((uint32_t *)&rb->notify_seq);
 #else
@@ -737,7 +753,7 @@ int rb_wait(rb_t *rb, uint32_t expected, int timeout_ms) {
         return 0;
     const uint64_t start = rb_now_ms();
     const uint64_t deadline = timeout_ms >= 0 ? start + (uint64_t)timeout_ms : UINT64_MAX;
-    RB_ATOMIC_FETCH_ADD(&rb->notify_waiters, 1u);
+    RB_ATOMIC_FETCH_ADD(rb->notify_waiters_ptr, 1u);
     int result = 0;
     for (;;) {
         if (rb_count(rb) != 0u)
@@ -777,7 +793,7 @@ int rb_wait(rb_t *rb, uint32_t expected, int timeout_ms) {
         result = -saved;
         break;
     }
-    RB_ATOMIC_FETCH_SUB(&rb->notify_waiters, 1u);
+    RB_ATOMIC_FETCH_SUB(rb->notify_waiters_ptr, 1u);
     return result;
 }
 int rb_notify_fd(rb_t *rb) {
