@@ -292,6 +292,14 @@ rb_err_t rb_init_ex(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scra
 #endif
     return RB_OK;
 }
+rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size) {
+    return rb_init_ex(rb, cfg, scratch, scratch_size, true);
+}
+
+rb_err_t rb_attach(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size) {
+    return rb_init_ex(rb, cfg, scratch, scratch_size, false);
+}
+
 void rb_deinit(rb_t *rb) {
     if (!rb)
         return;
