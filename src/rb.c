@@ -312,7 +312,7 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
         count = pos - tail;
         if (count >= rb->limit) {
 #else
-    uint32_t head = RB_ATOMIC_LOAD_RLX(rb->head_ptr);
+    uint32_t head = rb->cached_head;
     uint32_t tail = rb->cached_tail, count = head - tail;
     if (count >= rb->limit) {
         tail = RB_ATOMIC_LOAD_ACQ(rb->tail_ptr);
@@ -375,15 +375,16 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL((rb_atomic_u32 *)slot, pos + 1u);
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
-    uint32_t head = RB_ATOMIC_LOAD_RLX(rb->head_ptr);
-if (rb->index_mode != RB_INDEX_MODE_SCRATCH) {
+    uint32_t head = rb->cached_head + 1u;
+    rb->cached_head = head;
+    if (rb->index_mode != RB_INDEX_MODE_SCRATCH) {
 #if RB_USE_POINTERS
         rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
         rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
     }
-    RB_ATOMIC_STORE_REL(rb->head_ptr, head + 1u);
+    RB_ATOMIC_STORE_REL(rb->head_ptr, head);
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
      * Independent of the Linux futex/eventfd CPU wake path. */
@@ -468,9 +469,9 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
             return RB_ERR_EMPTY;
     }
 #else
-    uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail), head = rb->cached_head;
+    uint32_t tail = rb->cached_tail, head = rb->cached_head;
     if (tail == head) {
-        head = RB_ATOMIC_LOAD_ACQ(&rb->head);
+        head = RB_ATOMIC_LOAD_ACQ(rb->head_ptr);
         rb->cached_head = head;
         if (tail == head)
             return RB_ERR_EMPTY;
@@ -531,8 +532,9 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #else
-    uint32_t tail = RB_ATOMIC_LOAD_RLX(rb->tail_ptr);
-    RB_ATOMIC_STORE_REL(rb->tail_ptr, tail + 1u);
+    uint32_t tail = rb->cached_tail + 1u;
+    rb->cached_tail = tail;
+    RB_ATOMIC_STORE_REL(rb->tail_ptr, tail);
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_head, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #endif
