@@ -29,6 +29,7 @@ typedef enum {
 #define RB_SLOT_HDR_SIZE 4u
 #endif
 typedef enum { RB_OVERSIZE_TRUNCATE = 0, RB_OVERSIZE_DROP = 1 } rb_oversize_policy_t;
+typedef enum { RB_INDEX_MODE_LOCAL = 0, RB_INDEX_MODE_SCRATCH = 1 } rb_index_mode_t;
 #if RB_USE_POINTERS
 typedef void *rb_entry_t;
 #else
@@ -65,6 +66,7 @@ typedef struct {
     uint32_t low_d;
     uint32_t low_e;
     rb_oversize_policy_t oversize_policy;
+    rb_index_mode_t index_mode;
     size_t producer_stack_size;
     size_t consumer_stack_size;
     rb_callbacks_t cb;
@@ -77,6 +79,7 @@ void rb_config_set_slot_size(rb_config_t *cfg, uint32_t slot_size);
 void rb_config_set_low_d(rb_config_t *cfg, uint32_t percent);
 void rb_config_set_low_e(rb_config_t *cfg, uint32_t percent);
 void rb_config_set_oversize_policy(rb_config_t *cfg, rb_oversize_policy_t p);
+void rb_config_set_index_mode(rb_config_t *cfg, rb_index_mode_t mode);
 void rb_config_set_callbacks(rb_config_t *cfg, const rb_callbacks_t *cb);
 void rb_config_set_producer_stack(rb_config_t *cfg, size_t bytes);
 void rb_config_set_consumer_stack(rb_config_t *cfg, size_t bytes);
@@ -105,6 +108,10 @@ bool rb_is_full(const rb_t *rb);
 bool rb_is_empty(const rb_t *rb);
 void *rb_slot_ptr(rb_t *rb, uint32_t slot_index);
 const void *rb_slot_cptr(const rb_t *rb, uint32_t slot_index);
+#if RB_ENABLE_VOLATILE_API
+volatile void *rb_slot_vptr(rb_t *rb, uint32_t slot_index);
+const volatile void *rb_slot_cvptr(const rb_t *rb, uint32_t slot_index);
+#endif
 #if RB_ENABLE_STATS
 const rb_stats_t *rb_stats(const rb_t *rb);
 void rb_stats_reset(rb_t *rb);
