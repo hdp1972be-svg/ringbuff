@@ -362,7 +362,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL((rb_atomic_u32 *)slot, pos + 1u);
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
-    uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head);
+    uint32_t head = RB_ATOMIC_LOAD_RLX(rb->head_ptr);
 #if RB_USE_POINTERS
     rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
@@ -393,7 +393,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     rb->cached_consumer_pos = tail;
     uint32_t count = (pos + 1u) - tail;
 #else
-    uint32_t tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
+    uint32_t tail = RB_ATOMIC_LOAD_ACQ(rb->tail_ptr);
     rb->cached_tail = tail;
     uint32_t count = (head + 1u) - tail;
 #endif
@@ -701,7 +701,7 @@ uint32_t rb_notify_value(const rb_t *rb) {
 #if RB_PER_SLOT_LAP
     return rb ? RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) : 0u;
 #else
-    return rb ? RB_ATOMIC_LOAD_ACQ(&rb->head) : 0u;
+    return rb ? RB_ATOMIC_LOAD_ACQ(rb->head_ptr) : 0u;
 #endif
 }
 static uint64_t rb_now_ms(void) {
@@ -737,7 +737,7 @@ int rb_wait(rb_t *rb, uint32_t expected, int timeout_ms) {
         #if RB_PER_SLOT_LAP
         int rc = rb_futex_wait((uint32_t *)&rb->notify_seq, expected, &ts);
 #else
-        int rc = rb_futex_wait((uint32_t *)&rb->head, expected, &ts);
+        int rc = rb_futex_wait((uint32_t *)rb->head_ptr, expected, &ts);
 #endif
         int saved = errno;
         if (rc == 0 || saved == EAGAIN)
