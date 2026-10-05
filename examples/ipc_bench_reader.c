@@ -56,7 +56,8 @@ static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s -t <seconds> [-s <bytes>] [--address <hex>]\n"
             "  -t <seconds>  benchmark duration, required (no default)\n"
-            "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n",
+            "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n"
+            "  --hugepages   use an actual HugeTLB-backed shared mapping\n",
             prog, (unsigned)RB_BENCH_MSG_SIZE);
 }
 
@@ -64,13 +65,18 @@ int main(int argc, char **argv) {
     double seconds = -1.0;
     unsigned msg_size = (unsigned)RB_BENCH_MSG_SIZE;
     uintptr_t map_address = 0u;
+    int use_hugepages = 0;
     static const struct option long_opts[] = {
         {"address", required_argument, NULL, 'a'},
+        {"hugepages", no_argument, NULL, 'H'},
         {NULL, 0, NULL, 0}
     };
     int c;
     while ((c = getopt_long(argc, argv, "t:s:a:", long_opts, NULL)) != -1) {
         switch (c) {
+        case 'H':
+            use_hugepages = 1;
+            break;
         case 'a':
             if (ipc_parse_address(optarg, &map_address) != 0) {
                 fprintf(stderr, "%s: invalid --address value '%s'\n", argv[0], optarg);
@@ -118,7 +124,8 @@ int main(int argc, char **argv) {
     void *base = MAP_FAILED;
     for (;;) {
         struct stat st;
-        fd = shm_open(RB_SHM_NAME, O_RDWR, 0);
+        fd = use_hugepages ? open("/dev/hugepages/rb_ipc_bench", O_RDWR, 0)
+                           : shm_open(RB_SHM_NAME, O_RDWR, 0);
         if (fd >= 0) {
             if (fstat(fd, &st) != 0) {
                 perror("bench_reader: fstat");
@@ -145,7 +152,7 @@ int main(int argc, char **argv) {
             fprintf(stderr,
                     "bench_reader: %s not ready after %.1fs "
                     "(start ipc_bench_writer first)\n",
-                    RB_SHM_NAME, seconds + 2.0);
+                    use_hugepages ? "/dev/hugepages/rb_ipc_bench" : RB_SHM_NAME, seconds + 2.0);
             return 1;
         }
         struct timespec ts = {0, 1 * 1000 * 1000};
