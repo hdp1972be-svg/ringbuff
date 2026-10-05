@@ -5,6 +5,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(RB_USE_POINTERS "Use void* entries instead of uint32_t indices" OFF)
+option(RB_INDEX_IN_SCRATCH "Make scratch-canonical head/tail the default init mode" OFF)
+option(RB_ENABLE_VOLATILE_API "Expose explicit volatile slot-pointer API" ON)
 option(RB_SLOT_CACHELINE_PAD "Pad slot stride up to a cache line" OFF)
 option(RB_SINGLE_THREADED "Single-threaded / no atomics mode" OFF)
 option(RB_USE_ATOMICS "Use C11 <stdatomic.h>" ON)
@@ -36,7 +38,9 @@ target_compile_definitions(rb PUBLIC
     $<$<BOOL:${RB_USE_ATOMICS}>:RB_USE_ATOMICS=1>
     $<$<BOOL:${RB_ENABLE_STATS}>:RB_ENABLE_STATS=1>
     $<$<BOOL:${RB_ENABLE_NOTIFY}>:RB_ENABLE_NOTIFY=1>
-    $<$<BOOL:${RB_FUTEX_SHARED}>:RB_FUTEX_SHARED=1>)
+    $<$<BOOL:${RB_FUTEX_SHARED}>:RB_FUTEX_SHARED=1>
+    $<$<BOOL:${RB_INDEX_IN_SCRATCH}>:RB_INDEX_IN_SCRATCH=1>
+    $<$<BOOL:${RB_ENABLE_VOLATILE_API}>:RB_ENABLE_VOLATILE_API=1>)
 target_compile_definitions(rb PRIVATE RB_MEMCPY=${RB_MEMCPY} RB_MEMSET=${RB_MEMSET})
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rb PRIVATE -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections)
