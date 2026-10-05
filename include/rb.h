@@ -66,10 +66,11 @@ typedef struct {
     uint32_t low_d;
     uint32_t low_e;
     rb_oversize_policy_t oversize_policy;
-    rb_index_mode_t index_mode;
     size_t producer_stack_size;
     size_t consumer_stack_size;
     rb_callbacks_t cb;
+    /* Appended so legacy positional initializers remain source-compatible. */
+    rb_index_mode_t index_mode;
 } rb_config_t;
 void rb_config_init(rb_config_t *cfg);
 void rb_config_set_capacity(rb_config_t *cfg, uint32_t capacity);
