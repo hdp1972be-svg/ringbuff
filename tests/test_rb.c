@@ -487,6 +487,54 @@ static void test_config_override(void) {
     free(rb_mem);
 }
 
+static void test_scratch_index_attach(void) {
+    rb_config_t cfg;
+    rb_config_init(&cfg);
+    rb_config_set_capacity(&cfg, 8);
+    rb_config_set_slots(&cfg, 8);
+    rb_config_set_slot_size(&cfg, 128);
+    rb_config_set_index_mode(&cfg, RB_INDEX_MODE_SCRATCH);
+
+    size_t scratch_size = 2u * RB_CACHE_LINE + 8u * stride_for(128);
+    void *scratch = aligned_alloc_or_die(RB_CACHE_LINE, scratch_size);
+    void *rb_mem_p = aligned_alloc_or_die(RB_CACHE_LINE, rb_size(8));
+    void *rb_mem_c = aligned_alloc_or_die(RB_CACHE_LINE, rb_size(8));
+
+    CHECK(rb_init(rb_mem_p, &cfg, scratch, scratch_size) == RB_OK,
+          "scratch-index creator init");
+    CHECK(rb_attach(rb_mem_c, &cfg, scratch, scratch_size) == RB_OK,
+          "scratch-index attach does not reset indices");
+
+    rb_t *producer = rb_mem_p;
+    rb_t *consumer = rb_mem_c;
+    uint32_t idx, cap, len;
+    void *w;
+    const void *obj;
+    bool trunc;
+
+    CHECK(rb_acquire(producer, 4, &idx, &w, &cap) == RB_OK,
+          "scratch-index acquire");
+    CHECK(cap >= 4, "scratch-index capacity");
+    memcpy(w, "test", 4);
+    CHECK(rb_publish(producer, idx, 4) == RB_OK,
+          "scratch-index publish");
+    CHECK(rb_count(consumer) == 1, "attached consumer sees canonical head");
+
+    CHECK(rb_consume(consumer, &idx, &obj, &len, &trunc) == RB_OK,
+          "attached consumer consumes");
+    CHECK(len == 4 && !trunc && memcmp(obj, "test", 4) == 0,
+          "attached consumer reads payload");
+    CHECK(rb_release(consumer, idx) == RB_OK,
+          "attached consumer release");
+    CHECK(rb_count(producer) == 0, "producer sees canonical tail");
+
+    rb_deinit(consumer);
+    rb_deinit(producer);
+    free(rb_mem_c);
+    free(rb_mem_p);
+    free(scratch);
+}
+
 /* ---------------- main ---------------- */
 
 int main(void) {
@@ -503,6 +551,7 @@ int main(void) {
     test_stats();
     test_mispair();
     test_config_override();
+    test_scratch_index_attach();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
