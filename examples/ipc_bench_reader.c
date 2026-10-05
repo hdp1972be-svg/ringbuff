@@ -14,6 +14,7 @@
 #include <time.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <getopt.h>
 #include <sys/stat.h>
 
 /* Cap stored latency samples so a multi-minute run cannot exhaust RAM.
@@ -63,9 +64,19 @@ int main(int argc, char **argv) {
     double seconds = -1.0;
     unsigned msg_size = (unsigned)RB_BENCH_MSG_SIZE;
     uintptr_t map_address = 0u;
+    static const struct option long_opts[] = {
+        {"address", required_argument, NULL, 'a'},
+        {NULL, 0, NULL, 0}
+    };
     int c;
-    while ((c = getopt(argc, argv, "t:s:")) != -1) {
+    while ((c = getopt_long(argc, argv, "t:s:a:", long_opts, NULL)) != -1) {
         switch (c) {
+        case 'a':
+            if (ipc_parse_address(optarg, &map_address) != 0) {
+                fprintf(stderr, "%s: invalid --address value '%s'\n", argv[0], optarg);
+                return 2;
+            }
+            break;
         case 's': {
             char *end = NULL;
             unsigned long v = strtoul(optarg, &end, 0);
@@ -89,22 +100,6 @@ int main(int argc, char **argv) {
         }
         default:
             usage(argv[0]);
-            return 2;
-        }
-    }
-    for (int ai = 1; ai < argc; ++ai) {
-        if (strcmp(argv[ai], "--address") == 0 && ai + 1 < argc) {
-            if (ipc_parse_address(argv[++ai], &map_address) != 0) {
-                fprintf(stderr, "bench_reader: invalid --address '%s'\n", argv[ai]);
-                return 2;
-            }
-        } else if (strncmp(argv[ai], "--address=", 10) == 0) {
-            if (ipc_parse_address(argv[ai] + 10, &map_address) != 0) {
-                fprintf(stderr, "bench_reader: invalid --address '%s'\n", argv[ai] + 10);
-                return 2;
-            }
-        } else if (argv[ai][0] == '-' && argv[ai][1] == '-') {
-            fprintf(stderr, "bench_reader: unknown option '%s'\n", argv[ai]);
             return 2;
         }
     }
