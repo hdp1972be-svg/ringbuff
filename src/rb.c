@@ -406,8 +406,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL((rb_atomic_u32 *)slot, pos + 1u);
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
-    uint32_t head = rb->cached_head + 1u;
-    rb->cached_head = head;
+    uint32_t head = rb->cached_head;
     if (rb->index_mode != RB_INDEX_MODE_SCRATCH) {
 #if RB_USE_POINTERS
         rb->entries[head & rb->mask] = (rb_entry_t)slot;
@@ -415,6 +414,8 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
         rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
     }
+    head++;
+    rb->cached_head = head;
     RB_ATOMIC_STORE_REL(rb->head_ptr, head);
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
