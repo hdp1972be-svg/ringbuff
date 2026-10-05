@@ -435,7 +435,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     uint32_t tail = RB_ATOMIC_LOAD_ACQ(rb->tail_ptr);
     rb->cached_tail = tail;
-    uint32_t count = (head + 1u) - tail;
+    uint32_t count = head - tail;
 #endif
 #if RB_ENABLE_STATS
     rb->stats.published++;
