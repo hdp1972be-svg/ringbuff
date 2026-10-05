@@ -13,8 +13,14 @@
  */
 
 #include "rb.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifndef RB_SHM_NAME
 #  define RB_SHM_NAME "/rb_ipc_demo"
@@ -72,5 +78,34 @@ static inline rb_t *ipc_ring(void *base) {
 static inline void *ipc_scratch(void *base) {
     return (uint8_t *)base + ipc_scratch_offset();
 }
+
+
+#if defined(__linux__)
+static inline void *ipc_mmap_shared(int fd, size_t size, uintptr_t address) {
+    int flags = MAP_SHARED;
+    if (address != 0u) {
+#ifdef MAP_FIXED_NOREPLACE
+        flags |= MAP_FIXED_NOREPLACE;
+#else
+        errno = ENOTSUP;
+        return MAP_FAILED;
+#endif
+    }
+    return mmap(address ? (void *)address : NULL, size,
+                PROT_READ | PROT_WRITE, flags, fd, 0);
+}
+static inline int ipc_parse_address(const char *text, uintptr_t *out) {
+    char *end = NULL;
+    unsigned long long v;
+    if (!text || !out || text[0] == '\0')
+        return -1;
+    errno = 0;
+    v = strtoull(text, &end, 0);
+    if (errno || !end || *end != '\0' || v == 0u)
+        return -1;
+    *out = (uintptr_t)v;
+    return 0;
+}
+#endif
 
 #endif /* RB_IPC_COMMON_H */
