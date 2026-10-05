@@ -82,10 +82,18 @@ static inline uint32_t slot_index_for(const rb_t *rb, uint32_t head) {
     return rb->slots_mask ? (head & rb->slots_mask) : (head % rb->slots);
 }
 static inline uint8_t *rb_scratch(rb_t *rb) {
+#if RB_INDEX_IN_SCRATCH
+    return rb->scratch_base + RB_SCRATCH_INDEX_BYTES;
+#else
     return rb->scratch_base;
+#endif
 }
 static inline const uint8_t *rb_scratch_c(const rb_t *rb) {
+#if RB_INDEX_IN_SCRATCH
+    return rb->scratch_base + RB_SCRATCH_INDEX_BYTES;
+#else
     return rb->scratch_base;
+#endif
 }
 #if RB_INDEX_IN_SCRATCH
 static inline rb_atomic_u32 *rb_canonical_head(rb_t *rb) {
@@ -214,7 +222,7 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     if (scratch_size < RB_SCRATCH_INDEX_BYTES + need)
         return RB_ERR_INVAL;
 #else
-    if (cfg->index_mode == RB_INDEX_MODE_SCRATCH && scratch_size < RB_SCRATCH_INDEX_BYTES + need)
+    if (cfg->index_mode == RB_INDEX_MODE_SCRATCH)
         return RB_ERR_INVAL;
 #endif
     rb->cb = cfg->cb;
@@ -501,7 +509,9 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #else
-    uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail);
+    uint32_t tail = RB_INDEX_IN_SCRATCH
+        ? RB_ATOMIC_LOAD_RLX(rb_canonical_tail(rb))
+        : RB_ATOMIC_LOAD_RLX(&rb->tail);
     if (RB_INDEX_IN_SCRATCH)
         RB_ATOMIC_STORE_REL(rb_canonical_tail(rb), tail + 1u);
     else
