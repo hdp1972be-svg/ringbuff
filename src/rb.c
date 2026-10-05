@@ -210,7 +210,7 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
         cfg->producer_stack_size ? cfg->producer_stack_size : RB_DEFAULT_PRODUCER_STACK;
     rb->consumer_stack_size =
         cfg->consumer_stack_size ? cfg->consumer_stack_size : RB_DEFAULT_CONSUMER_STACK;
-    rb->scratch_off = (size_t)((uintptr_t)scratch - (uintptr_t)rb);
+    rb->scratch_off = 0u;
     rb->scratch_base = (uint8_t *)scratch;
     rb->scratch_size = scratch_size;
     if (cfg->index_mode != RB_INDEX_MODE_LOCAL &&
