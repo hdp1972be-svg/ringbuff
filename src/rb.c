@@ -27,6 +27,12 @@ static int rb_futex_wake(uint32_t *word) {
 #endif
 }
 #endif
+#if RB_INDEX_IN_SCRATCH
+#define RB_SCRATCH_INDEX_HEAD_OFF 0u
+#define RB_SCRATCH_INDEX_TAIL_OFF RB_CACHE_LINE
+#define RB_SCRATCH_INDEX_BYTES (2u * RB_CACHE_LINE)
+#endif
+
 struct rb_s {
 #if RB_PER_SLOT_LAP
     RB_ALIGNAS(RB_CACHE_LINE) rb_atomic_u32 notify_seq;
@@ -52,6 +58,7 @@ struct rb_s {
     size_t producer_stack_size, consumer_stack_size;
     size_t scratch_off;
     size_t scratch_size;
+    uint8_t *scratch_base;
     rb_callbacks_t cb;
 #if RB_ENABLE_STATS
     rb_stats_t stats;
@@ -75,11 +82,19 @@ static inline uint32_t slot_index_for(const rb_t *rb, uint32_t head) {
     return rb->slots_mask ? (head & rb->slots_mask) : (head % rb->slots);
 }
 static inline uint8_t *rb_scratch(rb_t *rb) {
-    return (uint8_t *)rb + rb->scratch_off;
+    return rb->scratch_base;
 }
 static inline const uint8_t *rb_scratch_c(const rb_t *rb) {
-    return (const uint8_t *)rb + rb->scratch_off;
+    return rb->scratch_base;
 }
+#if RB_INDEX_IN_SCRATCH
+static inline rb_atomic_u32 *rb_canonical_head(rb_t *rb) {
+    return (rb_atomic_u32 *)(rb->scratch_base + RB_SCRATCH_INDEX_HEAD_OFF);
+}
+static inline rb_atomic_u32 *rb_canonical_tail(rb_t *rb) {
+    return (rb_atomic_u32 *)(rb->scratch_base + RB_SCRATCH_INDEX_TAIL_OFF);
+}
+#endif
 void rb_config_init(rb_config_t *cfg) {
     if (!cfg)
         return;
@@ -90,6 +105,7 @@ void rb_config_init(rb_config_t *cfg) {
     cfg->low_d = RB_DEFAULT_LOW_D;
     cfg->low_e = RB_DEFAULT_LOW_E;
     cfg->oversize_policy = RB_OVERSIZE_TRUNCATE;
+    cfg->index_mode = RB_INDEX_IN_SCRATCH ? RB_INDEX_MODE_SCRATCH : RB_INDEX_MODE_LOCAL;
 }
 void rb_config_set_capacity(rb_config_t *c, uint32_t v) {
     if (c)
@@ -190,7 +206,17 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     rb->consumer_stack_size =
         cfg->consumer_stack_size ? cfg->consumer_stack_size : RB_DEFAULT_CONSUMER_STACK;
     rb->scratch_off = (size_t)((uintptr_t)scratch - (uintptr_t)rb);
+    rb->scratch_base = (uint8_t *)scratch;
     rb->scratch_size = scratch_size;
+#if RB_INDEX_IN_SCRATCH
+    if (cfg->index_mode != RB_INDEX_MODE_SCRATCH)
+        return RB_ERR_INVAL;
+    if (scratch_size < RB_SCRATCH_INDEX_BYTES + need)
+        return RB_ERR_INVAL;
+#else
+    if (cfg->index_mode == RB_INDEX_MODE_SCRATCH && scratch_size < RB_SCRATCH_INDEX_BYTES + need)
+        return RB_ERR_INVAL;
+#endif
     rb->cb = cfg->cb;
     #if RB_PER_SLOT_LAP
     RB_ATOMIC_STORE_REL(&rb->notify_seq, 0u);
@@ -200,6 +226,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     RB_ATOMIC_STORE_REL(&rb->head, 0u);
     RB_ATOMIC_STORE_REL(&rb->tail, 0u);
     rb->cached_tail = rb->cached_head = 0u;
+#if RB_INDEX_IN_SCRATCH
+    RB_ATOMIC_STORE_REL(rb_canonical_head(rb), 0u);
+    RB_ATOMIC_STORE_REL(rb_canonical_tail(rb), 0u);
+#endif
 #endif
     rb->pending_slot = RB_NO_PENDING;
     rb->pending_wanted = 0u;
@@ -233,6 +263,7 @@ void rb_deinit(rb_t *rb) {
 #endif
     rb->scratch_off = 0;
     rb->scratch_size = 0;
+    rb->scratch_base = NULL;
     rb->pending_slot = RB_NO_PENDING;
     rb->consumer_active = 0u;
 }
@@ -250,9 +281,14 @@ rb_err_t rb_acquire(rb_t *rb, uint32_t wanted_len, uint32_t *out_slot_index, voi
         count = pos - tail;
         if (count >= rb->limit) {
 #else
-    uint32_t head = RB_ATOMIC_LOAD_RLX(&rb->head), tail = rb->cached_tail, count = head - tail;
+    uint32_t head = RB_INDEX_IN_SCRATCH
+        ? RB_ATOMIC_LOAD_RLX(rb_canonical_head(rb))
+        : RB_ATOMIC_LOAD_RLX(&rb->head);
+    uint32_t tail = rb->cached_tail, count = head - tail;
     if (count >= rb->limit) {
-        tail = RB_ATOMIC_LOAD_ACQ(&rb->tail);
+        tail = RB_INDEX_IN_SCRATCH
+            ? RB_ATOMIC_LOAD_ACQ(rb_canonical_tail(rb))
+            : RB_ATOMIC_LOAD_ACQ(&rb->tail);
         rb->cached_tail = tail;
         count = head - tail;
         if (count >= rb->limit) {
@@ -318,7 +354,10 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #else
     rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
-    RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
+    if (RB_INDEX_IN_SCRATCH)
+        RB_ATOMIC_STORE_REL(rb_canonical_head(rb), head + 1u);
+    else
+        RB_ATOMIC_STORE_REL(&rb->head, head + 1u);
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
      * Independent of the Linux futex/eventfd CPU wake path. */
@@ -328,7 +367,7 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #if RB_PER_SLOT_LAP
         (void)rb_futex_wake((uint32_t *)&rb->notify_seq);
 #else
-        (void)rb_futex_wake((uint32_t *)&rb->head);
+        (void)rb_futex_wake((uint32_t *)(RB_INDEX_IN_SCRATCH ? rb_canonical_head(rb) : &rb->head));
 #endif
     if (rb->notify_fd >= 0) {
         uint64_t one = 1u;
@@ -463,7 +502,10 @@ rb_err_t rb_release(rb_t *rb, uint32_t slot_index) {
     uint32_t head = rb->cached_notify_seq, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #else
     uint32_t tail = RB_ATOMIC_LOAD_RLX(&rb->tail);
-    RB_ATOMIC_STORE_REL(&rb->tail, tail + 1u);
+    if (RB_INDEX_IN_SCRATCH)
+        RB_ATOMIC_STORE_REL(rb_canonical_tail(rb), tail + 1u);
+    else
+        RB_ATOMIC_STORE_REL(&rb->tail, tail + 1u);
     rb->consumer_active = 0u;
     uint32_t head = rb->cached_head, new_count = head - (tail + 1u), old_count = new_count + 1u;
 #endif
@@ -550,7 +592,12 @@ uint32_t rb_count(const rb_t *rb) {
     #if RB_PER_SLOT_LAP
     return RB_ATOMIC_LOAD_ACQ(&rb->notify_seq) - RB_ATOMIC_LOAD_ACQ(&rb->consumer_pos);
 #else
-    return RB_ATOMIC_LOAD_ACQ(&rb->head) - RB_ATOMIC_LOAD_ACQ(&rb->tail);
+    return (RB_INDEX_IN_SCRATCH
+        ? RB_ATOMIC_LOAD_ACQ(rb_canonical_head(rb))
+        : RB_ATOMIC_LOAD_ACQ(&rb->head)) -
+        (RB_INDEX_IN_SCRATCH
+        ? RB_ATOMIC_LOAD_ACQ(rb_canonical_tail(rb))
+        : RB_ATOMIC_LOAD_ACQ(&rb->tail));
 #endif
 }
 uint32_t rb_capacity(const rb_t *rb) {
@@ -570,6 +617,18 @@ void *rb_slot_ptr(rb_t *rb, uint32_t slot_index) {
         return NULL;
     return rb_scratch(rb) + (size_t)slot_index * rb->slot_stride + RB_SLOT_HDR_SIZE;
 }
+#if RB_ENABLE_VOLATILE_API
+volatile void *rb_slot_vptr(rb_t *rb, uint32_t slot_index) {
+    if (!rb || !rb->scratch_size || slot_index >= rb->slots)
+        return NULL;
+    return (volatile void *)(rb_scratch(rb) + (size_t)slot_index * rb->slot_stride + RB_SLOT_HDR_SIZE);
+}
+const volatile void *rb_slot_cvptr(const rb_t *rb, uint32_t slot_index) {
+    if (!rb || !rb->scratch_size || slot_index >= rb->slots)
+        return NULL;
+    return (const volatile void *)(rb_scratch_c(rb) + (size_t)slot_index * rb->slot_stride + RB_SLOT_HDR_SIZE);
+}
+#endif
 const void *rb_slot_cptr(const rb_t *rb, uint32_t slot_index) {
     if (!rb || !rb->scratch_size || slot_index >= rb->slots)
         return NULL;
