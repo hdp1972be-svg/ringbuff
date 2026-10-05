@@ -27,7 +27,7 @@ static double elapsed_seconds(const struct timespec *start) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s -t <seconds> [-s <bytes>]\n"
+            "Usage: %s -t <seconds> [-s <bytes>] [--address <hex>]\n"
             "  -t <seconds>  benchmark duration, required (no default)\n"
             "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n",
             prog, (unsigned)RB_BENCH_MSG_SIZE);
@@ -36,6 +36,7 @@ static void usage(const char *prog) {
 int main(int argc, char **argv) {
     double seconds = -1.0;
     unsigned msg_size = (unsigned)RB_BENCH_MSG_SIZE;
+    uintptr_t map_address = 0u;
     int c;
     while ((c = getopt(argc, argv, "t:s:")) != -1) {
         switch (c) {
@@ -61,6 +62,22 @@ int main(int argc, char **argv) {
         }
         default:
             usage(argv[0]);
+            return 2;
+        }
+    }
+    for (int ai = 1; ai < argc; ++ai) {
+        if (strcmp(argv[ai], "--address") == 0 && ai + 1 < argc) {
+            if (ipc_parse_address(argv[++ai], &map_address) != 0) {
+                fprintf(stderr, "bench_writer: invalid --address '%s'\n", argv[ai]);
+                return 2;
+            }
+        } else if (strncmp(argv[ai], "--address=", 10) == 0) {
+            if (ipc_parse_address(argv[ai] + 10, &map_address) != 0) {
+                fprintf(stderr, "bench_writer: invalid --address '%s'\n", argv[ai] + 10);
+                return 2;
+            }
+        } else if (argv[ai][0] == '-' && argv[ai][1] == '-') {
+            fprintf(stderr, "bench_writer: unknown option '%s'\n", argv[ai]);
             return 2;
         }
     }
@@ -92,7 +109,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    void *base = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *base = ipc_mmap_shared(fd, sz, map_address);
     if (base == MAP_FAILED) {
         perror("bench_writer: mmap");
         close(fd);
@@ -118,8 +135,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("bench_writer: pid=%d shm=%s size=%zu B msg=%u B\n",
-           (int)getpid(), RB_SHM_NAME, sz, msg_size);
+    printf("bench_writer: pid=%d shm=%s size=%zu B msg=%u B%s\n",
+           (int)getpid(), RB_SHM_NAME, sz, msg_size, map_address ? " (fixed mapping)" : "");
     printf("bench_writer: running %.1f s at full speed (no pacing), "
            "start ipc_bench_reader now, Ctrl-C to stop early\n", seconds);
     fflush(stdout);
