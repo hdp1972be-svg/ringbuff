@@ -27,11 +27,9 @@ static int rb_futex_wake(uint32_t *word) {
 #endif
 }
 #endif
-#if RB_INDEX_IN_SCRATCH
 #define RB_SCRATCH_INDEX_HEAD_OFF 0u
 #define RB_SCRATCH_INDEX_TAIL_OFF RB_CACHE_LINE
 #define RB_SCRATCH_INDEX_BYTES (2u * RB_CACHE_LINE)
-#endif
 
 struct rb_s {
 #if RB_PER_SLOT_LAP
@@ -92,14 +90,12 @@ return rb->scratch_base + (rb->index_mode == RB_INDEX_MODE_SCRATCH ? RB_SCRATCH_
 static inline const uint8_t *rb_scratch_c(const rb_t *rb) {
 return rb->scratch_base + (rb->index_mode == RB_INDEX_MODE_SCRATCH ? RB_SCRATCH_INDEX_BYTES : 0u);
 }
-#if RB_INDEX_IN_SCRATCH
 static inline rb_atomic_u32 *rb_canonical_head(rb_t *rb) {
     return (rb_atomic_u32 *)(rb->scratch_base + RB_SCRATCH_INDEX_HEAD_OFF);
 }
 static inline rb_atomic_u32 *rb_canonical_tail(rb_t *rb) {
     return (rb_atomic_u32 *)(rb->scratch_base + RB_SCRATCH_INDEX_TAIL_OFF);
 }
-#endif
 void rb_config_init(rb_config_t *cfg) {
     if (!cfg)
         return;
