@@ -161,7 +161,8 @@ size_t rb_producer_stack(const rb_t *rb) {
 size_t rb_consumer_stack(const rb_t *rb) {
     return rb ? rb->consumer_stack_size : 0u;
 }
-rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size) {
+rb_err_t rb_init_ex(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size,
+                    bool initialize_shared_state) {
     if (!rb || !cfg || !scratch)
         return RB_ERR_INVAL;
     if (((uintptr_t)rb % _Alignof(rb_t)) != 0)
@@ -189,6 +190,8 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
 #endif
     if (need_align < 4u)
         need_align = 4u;
+    if (cfg->index_mode == RB_INDEX_MODE_SCRATCH && need_align < RB_CACHE_LINE)
+        need_align = RB_CACHE_LINE;
     if (((uintptr_t)scratch % need_align) != 0u)
         return RB_ERR_INVAL;
     uint32_t stride = slot_stride_for(slot_size);
@@ -241,13 +244,19 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     RB_ATOMIC_STORE_REL(&rb->consumer_pos, 0u);
     rb->cached_consumer_pos = rb->cached_notify_seq = 0u;
 #else
-    RB_ATOMIC_STORE_REL(&rb->head, 0u);
-    RB_ATOMIC_STORE_REL(&rb->tail, 0u);
+    if (initialize_shared_state) {
+        RB_ATOMIC_STORE_REL(&rb->head, 0u);
+        RB_ATOMIC_STORE_REL(&rb->tail, 0u);
+        if (rb->index_mode == RB_INDEX_MODE_SCRATCH) {
+            RB_ATOMIC_STORE_REL(rb->head_ptr, 0u);
+            RB_ATOMIC_STORE_REL(rb->tail_ptr, 0u);
+        }
+    }
     rb->cached_tail = rb->cached_head = 0u;
-if (rb->index_mode == RB_INDEX_MODE_SCRATCH) {
-    RB_ATOMIC_STORE_REL(rb->head_ptr, 0u);
-    RB_ATOMIC_STORE_REL(rb->tail_ptr, 0u);
-}
+    if (rb->index_mode == RB_INDEX_MODE_SCRATCH) {
+        rb->cached_head = RB_ATOMIC_LOAD_ACQ(rb->head_ptr);
+        rb->cached_tail = RB_ATOMIC_LOAD_ACQ(rb->tail_ptr);
+    }
 #endif
     rb->pending_slot = RB_NO_PENDING;
     rb->pending_wanted = 0u;
