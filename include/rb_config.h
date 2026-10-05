@@ -45,6 +45,18 @@
 #define RB_USE_ATOMICS        0
 #endif
 
+/* 1 = canonical head/tail indices live in the scratchpad.
+ * 0 = the legacy control-block indices are canonical. */
+#ifndef RB_INDEX_IN_SCRATCH
+#define RB_INDEX_IN_SCRATCH 0
+#endif
+
+/* 1 = expose an explicitly volatile slot-pointer API.  The normal API
+ * remains unchanged for source/backward compatibility. */
+#ifndef RB_ENABLE_VOLATILE_API
+#define RB_ENABLE_VOLATILE_API 1
+#endif
+
 /* 1 = use C11 <stdatomic.h>, 0 = porting-layer barriers only. */
 #ifndef RB_USE_ATOMICS
 #define RB_USE_ATOMICS        1
