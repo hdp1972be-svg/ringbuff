@@ -30,7 +30,8 @@ static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s -t <seconds> [-s <bytes>] [--address <hex>]\n"
             "  -t <seconds>  benchmark duration, required (no default)\n"
-            "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n",
+            "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n"
+            "  --hugepages   use an actual HugeTLB-backed shared mapping\n",
             prog, (unsigned)RB_BENCH_MSG_SIZE);
 }
 
@@ -38,8 +39,10 @@ int main(int argc, char **argv) {
     double seconds = -1.0;
     unsigned msg_size = (unsigned)RB_BENCH_MSG_SIZE;
     uintptr_t map_address = 0u;
+    int use_hugepages = 0;
     static const struct option long_opts[] = {
         {"address", required_argument, NULL, 'a'},
+        {"hugepages", no_argument, NULL, 'H'},
         {NULL, 0, NULL, 0}
     };
     int c;
@@ -54,6 +57,9 @@ int main(int argc, char **argv) {
             }
             break;
         }
+        case 'H':
+            use_hugepages = 1;
+            break;
         case 'a':
             if (ipc_parse_address(optarg, &map_address) != 0) {
                 fprintf(stderr, "%s: invalid --address value '%s'\n", argv[0], optarg);
@@ -83,13 +89,15 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, on_sigint);
 
-    int fd = shm_open(RB_SHM_NAME, O_CREAT | O_RDWR | O_EXCL, 0600);
+    char huge_path[128];
+    snprintf(huge_path, sizeof huge_path, "/dev/hugepages%s", RB_SHM_NAME);
+    int fd = use_hugepages
+        ? open(huge_path, O_CREAT | O_RDWR | O_EXCL, 0600)
+        : shm_open(RB_SHM_NAME, O_CREAT | O_RDWR | O_EXCL, 0600);
     if (fd < 0) {
         if (errno == EEXIST) {
-            fprintf(stderr,
-                    "bench_writer: %s already exists. remove it with:\n"
-                    "        rm /dev/shm%s\n",
-                    RB_SHM_NAME, RB_SHM_NAME);
+            fprintf(stderr, "bench_writer: %s already exists\n",
+                    use_hugepages ? huge_path : RB_SHM_NAME);
         } else {
             perror("bench_writer: shm_open");
         }
@@ -97,10 +105,30 @@ int main(int argc, char **argv) {
     }
 
     size_t sz = ipc_region_size_for(msg_size);
+    if (use_hugepages) {
+        long hp = 0;
+        FILE *hf = fopen("/proc/meminfo", "r");
+        if (hf) {
+            char line[128];
+            while (fgets(line, sizeof line, hf)) {
+                unsigned long kb;
+                if (sscanf(line, "Hugepagesize: %lu kB", &kb) == 1) {
+                    hp = (long)(kb * 1024ul);
+                    break;
+                }
+            }
+            fclose(hf);
+        }
+        if (hp <= 0) {
+            fprintf(stderr, "bench_writer: cannot determine HugeTLB page size\n");
+            close(fd); unlink(huge_path); return 1;
+        }
+        sz = (sz + (size_t)hp - 1u) & ~((size_t)hp - 1u);
+    }
     if (ftruncate(fd, (off_t)sz) != 0) {
         perror("bench_writer: ftruncate");
         close(fd);
-        shm_unlink(RB_SHM_NAME);
+        if (use_hugepages) unlink(huge_path); else shm_unlink(RB_SHM_NAME);
         return 1;
     }
 
@@ -131,7 +159,7 @@ int main(int argc, char **argv) {
     }
 
     printf("bench_writer: pid=%d shm=%s size=%zu B msg=%u B%s\n",
-           (int)getpid(), RB_SHM_NAME, sz, msg_size, map_address ? " (fixed mapping)" : "");
+           (int)getpid(), use_hugepages ? huge_path : RB_SHM_NAME, sz, map_address ? " (fixed mapping)" : "", use_hugepages ? " (HugeTLB)" : "");
     printf("bench_writer: running %.1f s at full speed (no pacing), "
            "start ipc_bench_reader now, Ctrl-C to stop early\n", seconds);
     fflush(stdout);
