@@ -28,7 +28,7 @@ static double elapsed_seconds(const struct timespec *start) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s -t <seconds> [-s <bytes>] [--address <hex>]\n"
+            "Usage: %s -t <seconds> [-s <bytes>] [--address <hex>] [--hugepages]\n"
             "  -t <seconds>  benchmark duration, required (no default)\n"
             "  -s <bytes>    message size, power of two in [4, 4096] (default %u)\n"
             "  --hugepages   use an actual HugeTLB-backed shared mapping\n",
@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
     if (base == MAP_FAILED) {
         perror("bench_writer: mmap");
         close(fd);
-        shm_unlink(RB_SHM_NAME);
+        if (use_hugepages) unlink(huge_path); else shm_unlink(RB_SHM_NAME);
         return 1;
     }
     close(fd);
@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
     if (e != RB_OK) {
         fprintf(stderr, "bench_writer: rb_init failed: %d\n", (int)e);
         munmap(base, sz);
-        shm_unlink(RB_SHM_NAME);
+        if (use_hugepages) unlink(huge_path); else shm_unlink(RB_SHM_NAME);
         return 1;
     }
 
