@@ -84,7 +84,10 @@ void rb_config_set_callbacks(rb_config_t *cfg, const rb_callbacks_t *cb);
 void rb_config_set_producer_stack(rb_config_t *cfg, size_t bytes);
 void rb_config_set_consumer_stack(rb_config_t *cfg, size_t bytes);
 size_t rb_size(uint32_t capacity);
+rb_err_t rb_init_ex(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size,
+                    bool initialize_shared_state);
 rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size);
+rb_err_t rb_attach(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch_size);
 void rb_deinit(rb_t *rb);
 size_t rb_producer_stack(const rb_t *rb);
 size_t rb_consumer_stack(const rb_t *rb);
