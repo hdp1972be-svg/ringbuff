@@ -40,7 +40,8 @@ target_compile_definitions(rb PUBLIC
     $<$<BOOL:${RB_ENABLE_NOTIFY}>:RB_ENABLE_NOTIFY=1>
     $<$<BOOL:${RB_FUTEX_SHARED}>:RB_FUTEX_SHARED=1>
     $<$<BOOL:${RB_INDEX_IN_SCRATCH}>:RB_INDEX_IN_SCRATCH=1>
-    $<$<BOOL:${RB_ENABLE_VOLATILE_API}>:RB_ENABLE_VOLATILE_API=1>)
+    $<$<BOOL:${RB_ENABLE_VOLATILE_API}>:RB_ENABLE_VOLATILE_API=1>
+    $<$<NOT:$<BOOL:${RB_ENABLE_VOLATILE_API}>>:RB_ENABLE_VOLATILE_API=0>)
 target_compile_definitions(rb PRIVATE RB_MEMCPY=${RB_MEMCPY} RB_MEMSET=${RB_MEMSET})
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rb PRIVATE -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections)
