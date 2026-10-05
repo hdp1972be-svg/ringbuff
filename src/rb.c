@@ -12,18 +12,25 @@
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
-static int rb_futex_wait(uint32_t *word, uint32_t expected, const struct timespec *ts) {
+static int rb_futex_wait(uint32_t *word, uint32_t expected,
+                         const struct timespec *ts, bool shared) {
 #if RB_FUTEX_SHARED
+    (void)shared;
     return (int)syscall(SYS_futex, word, FUTEX_WAIT, expected, ts, NULL, 0);
 #else
-    return (int)syscall(SYS_futex, word, FUTEX_WAIT_PRIVATE, expected, ts, NULL, 0);
+    return (int)syscall(SYS_futex, word,
+                        shared ? FUTEX_WAIT : FUTEX_WAIT_PRIVATE,
+                        expected, ts, NULL, 0);
 #endif
 }
-static int rb_futex_wake(uint32_t *word) {
+static int rb_futex_wake(uint32_t *word, bool shared) {
 #if RB_FUTEX_SHARED
+    (void)shared;
     return (int)syscall(SYS_futex, word, FUTEX_WAKE, 1, NULL, NULL, 0);
 #else
-    return (int)syscall(SYS_futex, word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+    return (int)syscall(SYS_futex, word,
+                        shared ? FUTEX_WAKE : FUTEX_WAKE_PRIVATE,
+                        1, NULL, NULL, 0);
 #endif
 }
 #endif
@@ -416,9 +423,9 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
 #if RB_ENABLE_NOTIFY && defined(__linux__)
     if (RB_ATOMIC_LOAD_RLX(rb->notify_waiters_ptr) != 0u)
 #if RB_PER_SLOT_LAP
-        (void)rb_futex_wake((uint32_t *)&rb->notify_seq);
+        (void)rb_futex_wake((uint32_t *)&rb->notify_seq, false);
 #else
-        (void)rb_futex_wake((uint32_t *)rb->head_ptr);
+        (void)rb_futex_wake((uint32_t *)rb->head_ptr, rb->index_mode == RB_INDEX_MODE_SCRATCH);
 #endif
     if (rb->notify_fd >= 0) {
         uint64_t one = 1u;
@@ -780,9 +787,9 @@ int rb_wait(rb_t *rb, uint32_t expected, int timeout_ms) {
         }
         struct timespec ts = {(time_t)(slice / 1000u), (long)((slice % 1000u) * 1000000u)};
         #if RB_PER_SLOT_LAP
-        int rc = rb_futex_wait((uint32_t *)&rb->notify_seq, expected, &ts);
+        int rc = rb_futex_wait((uint32_t *)&rb->notify_seq, expected, &ts, false);
 #else
-        int rc = rb_futex_wait((uint32_t *)rb->head_ptr, expected, &ts);
+        int rc = rb_futex_wait((uint32_t *)rb->head_ptr, expected, &ts, rb->index_mode == RB_INDEX_MODE_SCRATCH);
 #endif
         int saved = errno;
         if (rc == 0 || saved == EAGAIN)
