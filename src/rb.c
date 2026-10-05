@@ -216,6 +216,10 @@ rb_err_t rb_init(rb_t *rb, const rb_config_t *cfg, void *scratch, size_t scratch
     if (cfg->index_mode != RB_INDEX_MODE_LOCAL &&
         cfg->index_mode != RB_INDEX_MODE_SCRATCH)
         return RB_ERR_INVAL;
+#if RB_USE_POINTERS
+    if (cfg->index_mode == RB_INDEX_MODE_SCRATCH)
+        return RB_ERR_INVAL;
+#endif
 #if RB_PER_SLOT_LAP
     if (cfg->index_mode == RB_INDEX_MODE_SCRATCH)
         return RB_ERR_INVAL;
@@ -363,11 +367,13 @@ rb_err_t rb_publish_ex(rb_t *rb, uint32_t slot_index, uint32_t written_len, bool
     RB_ATOMIC_STORE_REL(&rb->notify_seq, pos + 1u);
 #else
     uint32_t head = RB_ATOMIC_LOAD_RLX(rb->head_ptr);
+if (rb->index_mode != RB_INDEX_MODE_SCRATCH) {
 #if RB_USE_POINTERS
-    rb->entries[head & rb->mask] = (rb_entry_t)slot;
+        rb->entries[head & rb->mask] = (rb_entry_t)slot;
 #else
-    rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
+        rb->entries[head & rb->mask] = (rb_entry_t)slot_index;
 #endif
+    }
     RB_ATOMIC_STORE_REL(rb->head_ptr, head + 1u);
 #endif
     /* Optional device doorbell (MSI-X, CUDA event, FPGA kick, …).
@@ -460,18 +466,22 @@ rb_err_t rb_consume(rb_t *rb, uint32_t *out_slot_index, const void **out_obj, ui
         if (tail == head)
             return RB_ERR_EMPTY;
     }
-    rb_entry_t entry = rb->entries[tail & rb->mask];
     uint32_t slot_index;
+    if (rb->index_mode == RB_INDEX_MODE_SCRATCH) {
+        slot_index = slot_index_for(rb, tail);
+    } else {
+        rb_entry_t entry = rb->entries[tail & rb->mask];
 #if RB_USE_POINTERS
-    if ((const uint8_t *)entry < rb_scratch(rb))
-        return RB_ERR_INVAL;
-    uintptr_t off = (uintptr_t)((const uint8_t *)entry - rb_scratch(rb));
-    if (off % rb->slot_stride)
-        return RB_ERR_INVAL;
-    slot_index = (uint32_t)(off / rb->slot_stride);
+        if ((const uint8_t *)entry < rb_scratch(rb))
+            return RB_ERR_INVAL;
+        uintptr_t off = (uintptr_t)((const uint8_t *)entry - rb_scratch(rb));
+        if (off % rb->slot_stride)
+            return RB_ERR_INVAL;
+        slot_index = (uint32_t)(off / rb->slot_stride);
 #else
-    slot_index = (uint32_t)entry;
+        slot_index = (uint32_t)entry;
 #endif
+    }
     if (slot_index >= rb->slots)
         return RB_ERR_INVAL;
     const uint8_t *slot = rb_scratch(rb) + (size_t)slot_index * rb->slot_stride;
