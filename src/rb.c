@@ -143,6 +143,10 @@ void rb_config_set_oversize_policy(rb_config_t *c, rb_oversize_policy_t p) {
     if (c)
         c->oversize_policy = p;
 }
+void rb_config_set_index_mode(rb_config_t *c, rb_index_mode_t mode) {
+    if (c && (mode == RB_INDEX_MODE_LOCAL || mode == RB_INDEX_MODE_SCRATCH))
+        c->index_mode = mode;
+}
 void rb_config_set_callbacks(rb_config_t *c, const rb_callbacks_t *cb) {
     if (c && cb)
         c->cb = *cb;
