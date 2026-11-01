@@ -1,0 +1,89 @@
+=== GitHub Actions runner ===
+date_utc: 2026-11-01T10:16:22+00:00
+runner_name: GitHub Actions 1000001889
+runner_os: Linux
+runner_arch: X64
+runner_environment: github-hosted
+github_runner_image: ubuntu24
+
+=== system ===
+Linux runnervm48cm3 7.0.0-1017-azure #17~24.04.1-Ubuntu SMP PREEMPT Thu Sep 24 18:46:57 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+kernel: 7.0.0-1017-azure
+architecture: x86_64
+logical_cpus: 4
+online_cpus: 4
+cpu_model: Intel(R) Xeon(R) 6973P-C
+cpu_family: 6
+cpu_model_id: 173
+cpu_stepping: 1
+cpu_mhz: 3597.794
+ram: 15Gi
+ram_bytes: 16759304192
+cache:
+CPU(s):                                  4
+L1d cache:                               96 KiB (2 instances)
+L1i cache:                               128 KiB (2 instances)
+L2 cache:                                4 MiB (2 instances)
+L3 cache:                                480 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-3
+
+=== compiler ===
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+=== cpu flags ===
+fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch tpr_shadow ept vpid ept_ad fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves user_shstk avx_vnni avx512_bf16 vnmi avx512vbmi umip waitpkg avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm serialize tsxldtrk ibt amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+
+=== benchmark binary ===
+compiler_flags: Release / CMake / -O2
+
+=== bench_rb ===
+rb single-threaded full cycle benchmark
+(1 cycle = acquire + publish + consume + release)
+-------------------------------------------------
+
+system:
+  kernel       : Linux 7.0.0-1017-azure x86_64
+  logical CPUs : 4
+  CPU          : Intel(R) Xeon(R) 6973P-C
+  CPU flags    : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch tpr_shadow ept vpid ept_ad fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap 
+  RAM          : 15982 MiB
+  compiler     : 13.3.0
+  C standard   : C201112
+  optimization : benchmark target is normally built with -O2
+  sizeof(void*) : 8 bytes
+
+
+capacity=64:
+  slot=64     cap=64        92.57 M cycles/s  (  10.80 ns / cycle)
+  slot=256    cap=64        93.16 M cycles/s  (  10.73 ns / cycle)
+  slot=2048   cap=64        92.70 M cycles/s  (  10.79 ns / cycle)
+  slot=8192   cap=64        92.79 M cycles/s  (  10.78 ns / cycle)
+
+capacity=1024:
+  slot=64     cap=1024      91.87 M cycles/s  (  10.88 ns / cycle)
+  slot=256    cap=1024      91.47 M cycles/s  (  10.93 ns / cycle)
+  slot=2048   cap=1024      77.92 M cycles/s  (  12.83 ns / cycle)
+  slot=8192   cap=1024      67.60 M cycles/s  (  14.79 ns / cycle)
+
+=== bench_rb_random ===
+rb random-data benchmark
+(payloads written from a 1 MB PRNG pool, per-item checksum)
+seed = 0x1b8595746179aba2
+-----------------------------------------------------------
+
+fixed-size payloads (slot=2048):
+  slot=2048  cap=64    payload=16        23.62 M items/s    360.45 MB/s   (chk=ed00005a)
+  slot=2048  cap=64    payload=256       19.70 M items/s   4810.06 MB/s   (chk=7500005d)
+  slot=2048  cap=64    payload=1024      12.96 M items/s  12660.79 MB/s   (chk=1d000085)
+  slot=2048  cap=64    payload=2044      12.25 M items/s  23878.16 MB/s   (chk=8f0000e8)
+  slot=8192  cap=1024  payload=4096       3.81 M items/s  14886.57 MB/s   (chk=f40000db)
+
+variable-size payloads (slot=2048, WS-like):
+  slot=2048  cap=64    len=[16..128] avg=72     55.79 M items/s   3830.30 MB/s   (chk=00000053)
+  slot=2048  cap=64    len=[128..1024] avg=576     39.41 M items/s  21660.72 MB/s   (chk=000000a6)
+  slot=2048  cap=64    len=[256..2044] avg=1150     27.25 M items/s  29886.71 MB/s   (chk=000000e7)
+
+variable-size payloads (slot=8192, larger frames):
+  slot=8192  cap=64    len=[512..4096] avg=2305     16.71 M items/s  36730.77 MB/s   (chk=00000045)
+  slot=8192  cap=64    len=[2048..8192] avg=5119      8.35 M items/s  40761.46 MB/s   (chk=00000064)
